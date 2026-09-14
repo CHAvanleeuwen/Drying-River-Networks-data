@@ -18,7 +18,9 @@ The repository contains biomass-processing scripts for the following countries:
 🇭🇺 Hungary
 🇪🇸 Spain
 
+
 **Repository Contents**
+
 File	Description
 Script biomass Croatia.R	Processing of biomass and length data for Croatia
 Script biomass CzechR.R	Processing of biomass and length data for the Czech Republic
@@ -84,7 +86,7 @@ install.packages(c(
   "lubridate"
 ))
 
-Secondary Productivity
+**Secondary Productivity**
 
 The Secondary productivity calculations.R script:
 
@@ -97,7 +99,7 @@ Incorporates abundance data.
 Interpolates missing length information where required.
 Calculates secondary productivity.
 
-The script explicitly states that the secondary productivity calculations are based on Morin & Dumont (1994).
+The secondary productivity calculations are based on Morin & Dumont (1994).
 
 
 Repository: CHAvanleeuwen/Drying-River-Networks-data
