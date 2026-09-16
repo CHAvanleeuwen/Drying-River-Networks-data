@@ -1,0 +1,79 @@
+---
+output: 
+  html_fragment:
+    keep_md: true
+    smart: true
+    md_extensions: +autolink_bare_uris+tex_math_single_backslash
+
+params:
+    lib_dir: /bettik/lionnetc/dryver/bact02_merged/run_clean_report
+    rds_path: rds_files/bact02_all_sequencing_clean_1.rds
+---
+
+```{r setup, include=FALSE, echo=F}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+
+```{r init-variable, echo=F, message=FALSE, warning=FALSE}
+lib_dir <- params$lib_dir
+rds_file <- file.path(lib_dir, params$rds_path)
+```
+
+```{r, load-data, warning=FALSE, echo=F, message=FALSE}
+mtbl <- readRDS(rds_file)
+```
+
+
+```{r, load-dependencies, echo=F, message=FALSE, warning=FALSE, results='hide'}
+.libPaths( c( .libPaths(), "/bettik/lionnetc/my_r_libraries/") )
+library("metabaR")
+```
+
+```{r, remove-negative-ctl, warning=FALSE, message=FALSE}
+samples_mtbl <- subset_metabarlist(mtbl, "pcrs", 
+                                   mtbl$pcrs$type=="sample" |  
+                                     (mtbl$pcrs$type=="control" & 
+                                        mtbl$pcrs$control_type=="positive"))
+samples_mtbl$samples[unique(samples_mtbl$pcrs[samples_mtbl$pcrs$type=="control", "sample_id"]), c("Country", "Sample_type")] <- "ctl_pos"
+samples_mtbl$samples[unique(samples_mtbl$pcrs[samples_mtbl$pcrs$type=="control", "sample_id"]), "Campaign"] <- 0
+samples_mtbl$motus <- samples_mtbl$motus[,!grepl("obiclean_status", colnames(samples_mtbl$motus))]
+```
+
+
+
+```{r, generate-mtbl-ctl-pos, warning=FALSE, message=FALSE}
+cpos <- subset_metabarlist(samples_mtbl, "samples", 
+                           samples_mtbl$samples$Campaign==0)
+saveRDS(cpos, file = file.path(lib_dir, "rds_files", "bact02_pcr_ctl_pos_2.rds"))
+
+rm(cpos)
+rm(campaign)
+gc_stat <- gc()
+```
+
+
+```{r, split-mtbl-by-campaign-soil_type, warning=FALSE, message=FALSE}
+for( camp in unique(samples_mtbl$samples$Campaign)[which(unique(samples_mtbl$samples$Campaign)>0)] ){
+  campaign <- subset_metabarlist(samples_mtbl, "samples",
+                                 samples_mtbl$samples$Campaign==camp)
+    
+  for( type in unique(campaign$samples[, "Sample_type"]) ){
+    camp_type <- subset_metabarlist(campaign, "samples",
+                                    campaign$samples$Sample_type==type)
+    saveRDS(camp_type,
+            file = file.path(lib_dir, "rds_files", 
+                             paste("bact02_pcr_camp-", camp, "_",
+                                   type,"_2.rds", sep="" )))
+    rm(camp_type)
+    gc_stat <- gc()
+  }
+  rm(campaign)
+  gc_stat <- gc()
+}
+```
+
+
+```{r, remove-gc-pcr-conta, fig.height=8, fig.width=8, warning=FALSE}
+rm(gc_stat)
+```

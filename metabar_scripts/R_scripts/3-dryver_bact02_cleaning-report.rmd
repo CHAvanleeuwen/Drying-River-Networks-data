@@ -1,0 +1,441 @@
+---
+title: "Dryver - Bact02 - cleaning report"
+author: "Lionnet Clément"
+date: "21 septembre 2022"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 2
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, load-library, warning=F, message=F, echo=F}
+library("jsonlite")
+library("metabaR")
+library("ggplot2")
+library("cowplot")
+library("ggrepel")
+library("gridExtra")
+library("ade4")
+library("RColorBrewer")
+library("DT")
+library("stringr")
+library("vegan")
+library("ape")
+library("reshape2")
+library("DT")
+```
+
+
+```{r, define-global-variable, echo=F}
+lib_dir <- "~/travail/document/DRYVER/bact02"
+```
+
+
+```{r, function, echo=F, warning=F, message=F}
+## Function
+make_fasta <- function(mtbl, fasta_name){
+  fasta_data <- subset_metabarlist(mtbl, "motus", 
+                                   colSums(mtbl$reads) > 0)
+  
+  samples_dict <- apply(fasta_data$reads, 2, function(col){gsub("\"", "\'", 
+                                                                toJSON(unbox(data.frame(t(col[col>0])))))})
+  
+  annotation_data <- data.frame("count"=as.character(colSums(fasta_data$reads)),
+                                "merged_sample"=samples_dict,
+                                "taxid"=as.character(fasta_data$motus$taxid),
+                                "best_identity"=paste("{","'Bact02.DB'", ":", 
+                                                      fasta_data$motus$`best_identity:Bact02.DB`, "}", 
+                                                      sep=""),
+                                "seq_length"=fasta_data$motus$seq_length)
+  
+  fasta_generator(fasta_data, output_file=fasta_name, 
+                  annotation = annotation_data)
+}
+
+
+## Descriptive stat
+statTable <- function(ngsfilter, sample_metabarlist){
+  replicates <- rownames(ngsfilter[ngsfilter$type=="sample",])
+  samples <- unique(as.character(ngsfilter[ngsfilter$type=="sample", "sample_id"]))
+  
+  data.frame("stat"=c("# total of replicates", "# kept replicates",
+                      "# total of samples", "# kept sample",
+                      "# taxa", 
+                      "# motus", "min # of reads",
+                      "mean # reads", "max # reads"),
+             "value"=c(length(replicates),
+                       length(replicates[replicates %in% rownames(sample_metabarlist$reads)]),
+                       length(samples),
+                       length(samples[samples %in% rownames(sample_metabarlist$samples)]),
+                       length(unique(sample_metabarlist$motus$scientific_name)),
+                       length(rownames(sample_metabarlist$motus)),
+                       min(rowSums(sample_metabarlist$reads)),
+                       round(mean(rowSums(sample_metabarlist$reads))),
+                       max(rowSums(sample_metabarlist$reads)))
+             )
+}
+
+## Visualize the result of filtering on sample replication
+ggReplicatStat <- function(ngsfilter, samples_metabarlist){
+  good_sample <- table(samples_metabarlist$pcrs[samples_metabarlist$pcrs$type=="sample", "sample_id"])
+  
+  remove_rep <-
+    rownames(ngsfilter[ngsfilter$type == "sample", ])[!rownames(ngsfilter[ngsfilter$type == "sample", ]) %in% 
+                                                        rownames(samples_metabarlist$pcrs)]
+  
+  bad_sample <- table(ngsfilter[remove_rep, "sample_id"])
+  to_plot <- data.frame("sample"=names(c(good_sample, bad_sample)), 
+                        "value"=as.vector(c(good_sample, bad_sample)),
+                        "status"=c(rep("kept",
+                                       length(good_sample)),
+                                   rep("removed", 
+                                       length(bad_sample))), stringsAsFactors = F)
+  to_plot$status <- factor(to_plot$status, levels=c("removed", "kept"))
+  
+  ggplot(to_plot,
+         aes(x=sample, y=value, fill=status, order=sample)) +
+    geom_bar(stat="identity") +
+    scale_fill_brewer(palette="Dark2", direction=-1) +
+    scale_x_discrete(name="Samples", limits = rev(levels(to_plot$sample)),
+                     expand = c(0,0)) +
+    scale_y_continuous(expand = c(0,0), limits = c(0, 3)) +
+    ylab("number of replicate") +
+    theme(axis.text.y = element_text(size=6),
+          plot.title = element_text(hjust = 0.5),
+          panel.grid = element_blank(),
+          panel.border = element_blank()) +
+    coord_flip()
+}
+
+most_abund_motus_distribution <- function(metabarlist, plot_title, agg_low_motus=T){
+  
+  if(missing(plot_title)){
+      plot_title <- "Distribution of motus"
+  }
+  
+  ## get the positive control value
+  ctl_pos_name <- rownames(metabarlist$reads)
+  ## remove motus which are not present in the positive control
+  ctl_pos <- t(metabarlist$reads[, colSums(metabarlist$reads)>0, drop=F])
+  
+  ## rename motus by motus_nb_scientific_name
+  rownames(ctl_pos) <- paste("motus", 1:length(rownames(ctl_pos)), metabarlist$motus[, "scientific_name"], sep="_")
+  
+  ## get the relative abundance
+  ctl_pos_rel <- as.matrix(sweep(ctl_pos, STATS = colSums(ctl_pos), FUN = "/", MARGIN = 2))
+  
+  to_plot <- as.data.frame(do.call(rbind, lapply(colnames(ctl_pos_rel), function(ctlname){ 
+    return(data.frame("sample_name"=rep(ctlname, length(rownames(ctl_pos_rel[, ctlname, drop=F]))), 
+                      "motus"=rownames(ctl_pos_rel[, ctlname, drop=F]),
+                      "value"= as.vector(ctl_pos_rel[, ctlname, drop=F]), 
+                      "taxon"=gsub("motus_[0-9]+_", "", rownames(ctl_pos_rel[, ctlname, drop=F])),
+                      type="motus_distribution",
+                      stringsAsFactors = F))
+  })))
+  if (isTRUE(agg_low_motus)) {
+    filter <- to_plot$value<=0.01
+    low_motus <- to_plot[which(to_plot$value<=0.01), ]
+    to_plot <- to_plot[which(to_plot$value>0.01), ]
+    to_plot <- rbind(to_plot, data.frame(aggregate(low_motus["value"],
+                                                   by = list(sample_name=low_motus$sample_name), 
+                                                   FUN = sum), 
+                                         "motus"="other_motus",
+                                         "taxon"="other_taxon_under_0.01", 
+                                         "type"="motus_distribution"))
+  }
+  
+  read_data <- as.data.frame(do.call(rbind, lapply(colnames(ctl_pos), function(ctlname){ 
+    return(data.frame("sample_name"=rep(ctlname, length(rownames(ctl_pos[,ctlname, drop=F]))), 
+                      "motus"=rownames(ctl_pos[,ctlname, drop=F]),
+                      "value"=as.vector(ctl_pos[,ctlname, drop=F]), 
+                      "taxon"=gsub("motus_[0-9]+_", "", rownames(ctl_pos[,ctlname, drop=F])),
+                      type="replicate_abundance",
+                      stringsAsFactors = F))
+  })))
+  
+  if (isTRUE(agg_low_motus)) {
+    low_motus <- read_data[filter, ]
+    read_data <- read_data[which(!filter), ]
+    read_data <- rbind(read_data, data.frame(aggregate(low_motus["value"], 
+                                                       by = list(sample_name=low_motus$sample_name), 
+                                                       FUN = sum), 
+                                             "motus"="other_motus",
+                                             "taxon"="other_taxon_under_0.01", 
+                                             "type"="replicate_abundance"))
+  }
+  
+  to_plot <- rbind(read_data, to_plot)
+  ## define the control name order to keep order in x-axis
+  to_plot$sample_name <- factor(to_plot$sample_name, levels = unique(to_plot$sample_name[order(to_plot$sample_name, decreasing = F)]))
+  to_plot$type <- factor(to_plot$type, levels = c("replicate_abundance", 
+                                                  "motus_distribution"))
+  
+  ## ordering the motus value to sort motus in stack barchart for experiment data
+  to_plot$motus <- reorder(to_plot$motus, to_plot$value)
+  to_plot$motus <- factor(to_plot$motus, levels=rev(levels(to_plot$motus)))
+  
+  ggplot(to_plot[to_plot$value>0,], aes(x=sample_name, y=value, order=motus, fill=taxon)) +
+    geom_bar(inherit.aes = T, stat = "identity", colour="black") +
+    facet_wrap("type", scales = "free_y", nrow = 2) +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+          plot.title = element_text(hjust = 0.5)) +
+    # legend.position = "none") +
+    ggtitle(plot_title)
+}
+
+identify_disfunctional_PCR <- function(metabarlist, sample_categories=NA, 
+                                       threshold=NA, motus_thresh=NA, title="Identify dysfunctionnal pcr", filtering=TRUE){
+    to_plot <- data.frame(reads=rowSums(metabarlist$reads), 
+                          motus=rowSums(metabarlist$reads>0),
+                          type=metabarlist$pcrs[,"type"],
+                          stringsAsFactors = F)
+    to_plot[to_plot$type=="control", "type"] <- metabarlist$pcrs[to_plot$type=="control", "control_type"]
+    
+    if(!is.na(sample_categories)){
+        to_plot$categories <- metabarlist$samples[metabarlist$pcrs$sample_id, 
+                                              sample_categories]
+        to_plot[is.na(to_plot$categories),"categories"] <- "no_information"
+    }
+    to_plot <- to_plot[to_plot$reads>0,]
+    g1 <- ggplot(to_plot, aes(x=reads,y=motus, 
+                              color=type, 
+                              ifelse(is.na(sample_categories), NULL, shape=categories))) + 
+    geom_point() + scale_x_log10(name="# reads (log10)") + scale_y_log10(name="# motus (log10)") +
+    theme(plot.title = element_text(hjust = 0.5)) +
+    ggtitle(title)
+    
+    if(!is.na(threshold)){
+        g1 <- g1 + geom_vline(xintercept = threshold, color = "red", size=0.5)
+    }
+    if(!is.na(motus_thresh)){
+        g1 <- g1 + geom_hline(yintercept = motus_thresh, color = "red", size=0.5)
+    }
+    print(g1)
+    if(filtering){
+        return(rownames(to_plot[to_plot$reads<threshold,]))
+    }
+}
+
+ggBoxSamplesMtd <- function(metabarlist, sample_mtd){
+  check <- melt(data.frame(metadata=metabarlist$samples[,sample_mtd],
+                           nb_reads=as.vector(rowSums(metabarlist$reads)), 
+                           nb_motus=as.vector(rowSums(metabarlist$reads>0)), 
+                           stringsAsFactors = F), id.vars="metadata")
+  
+  ggplot(check, aes(x=metadata, y=value, color=metadata)) + 
+    geom_boxplot() + theme_bw() + 
+    geom_jitter(alpha=0.2) + 
+    facet_wrap(~variable, scales = "free_y") + 
+    theme(axis.text.x = element_text(angle=45, h=1)) +
+    ggtitle("Distribution of reads and motus accross samples metadata")
+}
+
+ggBoxPCRMtd <- function(metabarlist, sample_mtd){
+  check <- melt(data.frame(metadata=metabarlist$pcrs[,sample_mtd],
+                           nb_reads=as.vector(rowSums(metabarlist$reads)), 
+                           nb_motus=as.vector(rowSums(metabarlist$reads>0)), 
+                           stringsAsFactors = F), id.vars="metadata")
+  
+  ggplot(check, aes(x=metadata, y=value, color=metadata)) + 
+    geom_boxplot() + theme_bw() + 
+    geom_jitter(alpha=0.2) + 
+    facet_wrap(~variable, scales = "free_y") + 
+    theme(axis.text.x = element_text(angle=45, h=1)) +
+    guides(color=guide_legend(ncol=2)) +
+    ggtitle("Distribution of reads and motus accross pcrs metadata")
+}
+
+## this function keep only the rank containning in the rank_vector and format the taxonomic lineage
+filter_on_rank <- function(taxo_path, rank_vector){
+  rank_filter <- lapply(taxo_path, str_detect, rank_vector);
+  filtered_matrix <- matrix(unlist(rank_filter), 
+                            nrow=length(unlist(rank_filter[1])))
+  filtered_res <- as.vector(taxo_path[apply(filtered_matrix, 2, any)])
+  available_rank <- apply(filtered_matrix, 1, any)
+  new_path <- lapply(seq_along(available_rank),
+                     function(ind){
+                       ranknames <- gsub(".*@", "@", filtered_res)
+                       if (rank_vector[ind] %in% ranknames) {
+                         filtered_res[which(rank_vector[ind]==ranknames)]}
+                       else {
+                         indn <- 1
+                         for(index in ind:1){
+                           if(rank_vector[index] %in% ranknames){
+                             indn <- which(rank_vector[index]==ranknames)
+                             break
+                           }
+                         }
+                         # paste the last taxon name with the active rank and undefined
+                         paste(gsub("@.*", "", filtered_res[indn]), 
+                               paste("(", 
+                                     paste(gsub("@", "", rank_vector[ind]),
+                                           "undefined", 
+                                           sep=" "),
+                                     ")", 
+                                     sep=""), 
+                               sep=" ")
+                       }
+                     })
+  new_path
+}
+
+## format all ecotag path
+format_ecotag_path <- function(path, ranks=rank){
+  rank_vector <- paste("@", ranks, sep="")
+  tmp_data <- strsplit(path, ":")
+  filtered_data <- lapply(tmp_data, filter_on_rank, rank_vector)
+  
+  formated_data <- lapply(filtered_data, 
+                          function(taxo_value){
+                            gsub("@.*", "", as.character(taxo_value))})
+  out <- data.frame(t(matrix(unlist(formated_data), 
+                                nrow=length(unlist(formated_data[1])))), stringsAsFactors = F)
+  names(out) <- ranks
+  out
+}
+```
+
+
+```{r, child="~/travail/document/DRYVER/bact02/report_fragment_clean/init_bact_data.md", eval=T}
+
+```
+
+```{r, child="~/travail/document/DRYVER/bact02/report_fragment_clean/raw_data_stat.md", eval=T}
+
+```
+
+```{r, child="~/travail/document/DRYVER/bact02/report_fragment_clean/sequencing_contaminant.md", eval=T}
+
+```
+
+## PCR reproducibility {.tabset}
+The goal of this step is to identity failed PCRs with their reproducibility. The used method detects outlier replicates within pcrs, with an underlying assumption: the compositional dissimilarities in MOTUs between replicate pcrs from a same sample should be lower than that observed between pcrs obtained from different samples. This assessment is obviously only possible when the experimental designs includes PCR replicates for each biological samples. For these function to run, pcrs yielding no reads, as well as negative controls, should be excluded. To measure the dissimilarity, the algorithm uses the Bray-Curtis distance on frequency of motus in each pcrs replicates.
+
+```{r, child="~/travail/document/DRYVER/bact02/report_fragment_clean/check_pcr_replication_build_mtbl.md", eval=F}
+
+```
+
+```{bash, eval=F, echo=F}
+source /applis/site/nix.sh
+nix-shell ~/shell.nix
+
+while read -r line
+do 
+  tab=($line); 
+  Rscript -e 'library(rmarkdown); 
+    rmarkdown::render("check_pcr.rmd", 
+                      params = list(lib_dir= "'${tab[0]}'", rds_path="'${tab[1]}'", out_file="'${tab[2]}'"), 
+                      output_file = "'${tab[3]}'")';
+done < params/check_pcr_final.params
+
+```
+
+```{r, test, eval=T, echo=F, results='asis'}
+cat(paste0("### positive control {.tabset}\n"))
+cat(knitr::knit_child(file.path(lib_dir, "report_fragment_clean/bact02-check_pcr_ctl_pos.md"), quiet=TRUE))
+cat("\n\n")
+    
+check_pcr_list <- sort(list.files(file.path(lib_dir, "report_fragment_clean"), pattern = "bact02-check_pcr_campaign.*md"))
+for(html in unique(gsub("_biofilm.md|_sediment.md", "",check_pcr_list))){
+  title <- gsub("bact02-check_pcr_", "", html)
+  cat(paste0("### ", title,"{.tabset}\n"))
+  cat(knitr::knit_child(paste0(lib_dir, "/report_fragment_clean/", html, "_sediment.md"), quiet=TRUE))
+  cat(knitr::knit_child(paste0(lib_dir, "/report_fragment_clean/", html, "_biofilm.md"), quiet=TRUE))
+  cat("\n\n")
+}
+
+```
+
+```{r, child="~/travail/document/DRYVER/euka02/report_fragment_clean/check_pcr_replication_aggregate_results.md", eval=T}
+
+```
+
+## PCR errors
+Clean the pcr replicate with obiclean annotation. One step of the obitools workflow uses program obiclean to identify pcr variants. A sequence is considered as variant if it has 1 nucleotide difference and an abundance ratio less than 0.5. For each pcr replicate, this program classifies sequences in 3 categories : 
+
+* head : there exists at least one sequence in the pcr replicate that is a variant with a difference of one nucleotide and with a lower abundance
+* singleton : the sequence is unique in the pcr replicate and it has no variant
+* internal : the sequence is a variant derived from a head sequence with a higher abundance
+
+```{r, child="~/travail/document/DRYVER/bact02/report_fragment_clean/obiclean-filtering.md", eval=T}
+
+```
+
+## Extraction and PCR contaminants {.tabset}
+This step detects contaminant MOTUs based on extraction and PCR negative controls.
+
+```{r, child="~/travail/document/DRYVER/bact02/report_fragment_clean/pcr-ext_contaminant.md", eval=T}
+
+```
+
+## Taxonomic filtering {.tabset}
+```{r, child="~/travail/document/DRYVER/bact02/report_fragment_clean/taxonomic_filtering.md", eval=T}
+
+```
+
+```{r, child="~/travail/document/DRYVER/bact02/report_fragment_clean/check-and-remove-bad-replicate_bact02.md", eval=T}
+
+```
+
+# Clustering {.tabset}
+The unique sequences are clustered to reduce the number of motus and to remove pcr error not detected in the previous steps. All sequences that have a similarity higher than 0.97 are grouped together and the center of the cluster corresponds to the sequence that has the highest number of reads.
+
+```{r, child="~/travail/document/DRYVER/bact02/report_fragment_clean/dryver_bact02_clustering.md", eval=T}
+
+```
+
+```{r, child="~/travail/document/DRYVER/bact02/report_fragment_clean/add-silva-annotation.md", eval=T}
+
+```
+
+```{r, update-sampl-mtd, warning=F, message=F, eval=F, echo=F}
+## Update sample metadata table
+samples_mtd <- read.csv2(file.path(lib_dir, "../sample_metadata", "samples_metadata_update.tsv"), 
+                     row.names = 1, header = T, check.names = F, stringsAsFactors = F, sep="\t")
+
+mtbl$samples <- samples_mtd[rownames(mtbl$samples), ]
+saveRDS(mtbl, file.path(lib_dir, "rds_files", "bact02_clean_clustered_8.rds"))
+
+clust_mtbl <- readRDS(file.path(lib_dir, "rds_files", "bact02_clean_motus_9.rds"))
+clust_mtbl$samples <- samples_mtd[rownames(clust_mtbl$samples), ]
+saveRDS(clust_mtbl, file.path(lib_dir, "rds_files", "bact02_clean_motus_9.rds"))
+rm(clust_mtbl)
+```
+
+# Descriptive stat {.tabset}
+```{r, child="~/travail/document/DRYVER/euka02/report_fragment_clean/descriptive-statistics.md", eval=T}
+
+```
+
+## Rarefaction curve {.tabset}
+Generate and plot rarefaction curves for each PCR using Hill numbers for q=0,1,2. These indices are equivalent to : Richness, for q=0 (D0); Exponential of the Shannon entropy, for q=1 (D1); Inverse of the Simpson index, for q=2 (D2). Another plot are generated, it's the Good's coverage index calculates with the formula : 1-singletons/#reads.
+
+```{r, child="~/travail/document/DRYVER/bact02/report_fragment_clean/rarefaction_curve.md", eval=T}
+
+```
+
+```{r, child="~/travail/document/DRYVER/bact02/report_fragment_clean/generate_table_file_bact02.md", eval=T}
+
+```
+
+
+# Check biological signal
+```{r, child="~/travail/document/DRYVER/bact02/report_fragment_clean/biodiversity_analysis_bact02.md", eval=T}
+
+```
+
+
+```{r results='asis', echo=F}
+# htmltools::includeHTML("~/Téléchargements/html_files/raw_data_stat.html")
+# knitr::knit_child('~/Téléchargements/html_files/raw_data_stat.md', quiet = TRUE)
+DT::datatable(NULL, extensions = 'Buttons', 
+              options = list(dom = 'Bfrtip', 
+                             buttons = c('excel', "csv"),
+                             scrollX='400px'))
+```

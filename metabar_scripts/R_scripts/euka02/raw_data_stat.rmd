@@ -1,0 +1,549 @@
+---
+output: 
+  html_fragment:
+    keep_md: true
+    smart: true
+    md_extensions: +autolink_bare_uris+tex_math_single_backslash
+params:
+    lib_dir: /bettik/lionnetc/dryver/euka02_merged/run_clean_report
+    rds_path: rds_files/euka02_all_0.rds
+    out_file: NULL
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE, echo=F}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+
+```{r init-variable, echo=F, message=FALSE, warning=FALSE}
+lib_dir <- params$lib_dir
+rds_file <- file.path(lib_dir, params$rds_path)
+rev_tag <- "acacacac,acagcaca,gtgtacat,tatgtcag,tagtcgca,tactatac,actagatc,gatcgcga,cgctctcg,gtcgtaga,gtcacgtc,gactgatg,agactatg,gcgtcagc,tgacatca,acatgtgt,gtacgact,atgatcgc,acgacgag,catcagtc,atcagtca,tctactga,gatgatct,ctgcgtac,agcgacta,tcagtgtc,actctgct,atatagcg,ctatgcta,tcgcgctg,agcacagt,tagctagt,agtgctac,cgtataca,cgagtcgt,cacatgat"
+
+fwd_tag <- "acacacac,acagcaca,gtgtacat,tatgtcag,tagtcgca,tactatac,actagatc,gatcgcga,cgctctcg,gtcgtaga,gtcacgtc,gactgatg,agactatg,gcgtcagc,tgacatca,acatgtgt,gtacgact,atgatcgc,acgacgag,catcagtc,atcagtca,tctactga,gatgatct,ctgcgtac,agcgacta,tcagtgtc,actctgct,atatagcg,ctatgcta,tcgcgctg,agcacagt,tagctagt"
+
+tag_list <- union(unlist(strsplit(fwd_tag, ",")), 
+                  unlist(strsplit(rev_tag, ",")))
+```
+
+
+```{r, function, echo=F}
+# Functions
+## Check sequencing effort
+ggSeqEffort <- function(metabarlist){
+  
+  replicates <- metabarlist$reads[rowSums(metabarlist$reads)>0,]
+
+  to_plot <- data.frame(reads=rowSums(replicates),
+                        motus=rowSums(replicates>0),
+                        pcr_type=metabarlist$pcrs[rownames(replicates), "type"],
+                        stringsAsFactors = F)
+  to_plot[to_plot$pcr_type=="control", "pcr_type"] <- metabarlist$pcrs[rownames(to_plot[to_plot$pcr_type=="control",]), "control_type"]
+  to_plot$pcr_type <- factor(to_plot$pcr_type,
+                           levels = c("extraction", "pcr", "sequencing", "positive", "sample"))
+  
+  ggplot(to_plot, aes(x=reads, y=motus, color=pcr_type)) +
+    geom_point() +
+    scale_color_manual(values = c("brown", "red", "pink", "cyan4", "darkgrey"), 
+                       na.value = "grey") +
+    geom_smooth(inherit.aes = F, aes(x=reads, y=motus), 
+                method='lm', formula= y~log(x)) +
+    ggtitle("Check the sequencing effort for each replicate")
+}
+
+
+## Boxplot of reads count sample type
+ggBoxTypeStat <- function(metabarlist){
+  check <- melt(data.frame(control_type=metabarlist$pcrs[,"control_type"], 
+                           nb_reads=rowSums(metabarlist$reads), 
+                           nb_motus=rowSums(metabarlist$reads>0), 
+                           stringsAsFactors = F), id.vars="control_type")
+  check$control_type[is.na(check$control_type)] <- "samples"
+  
+  ggplot(check, aes(x=control_type, y=value, color=control_type)) + 
+    geom_boxplot() + theme_bw() + 
+    geom_jitter(alpha=0.2) + 
+    scale_color_manual(values = c("brown", "red", "cyan4","grey", "pink"), 
+                       na.value = "darkgrey") +
+    facet_wrap(~variable, scales = "free_y") + 
+    theme(axis.text.x = element_text(angle=45, h=1)) +
+    ggtitle("Distribution of reads and motus accross samples and controls")
+}
+
+
+identify_disfunctional_PCR <- function(metabarlist, sample_categories=NA, 
+                                       threshold=NA, title="Identify dysfunctionnal pcr", filtering=TRUE){
+    to_plot <- data.frame(reads=rowSums(metabarlist$reads), 
+                          motus=rowSums(metabarlist$reads>0),
+                          pcr_type=metabarlist$pcrs[,"type"],
+                          stringsAsFactors = F)
+    to_plot[to_plot$pcr_type=="control", "pcr_type"] <- metabarlist$pcrs[to_plot$pcr_type=="control", "control_type"]
+    to_plot$pcr_type <- factor(to_plot$pcr_type,
+                           levels = c("extraction", "pcr", "sequencing", "positive", "sample"))
+    
+    if(!is.na(sample_categories)){
+        to_plot$categories <- metabarlist$samples[metabarlist$pcrs$sample_id, 
+                                              sample_categories]
+        to_plot[is.na(to_plot$categories),"categories"] <- "no_information"
+    }
+    to_plot <- to_plot[to_plot$reads>0,]
+    g1 <- ggplot(to_plot, aes(x=reads,y=motus, 
+                              color=pcr_type, 
+                              ifelse(is.na(sample_categories), NULL, shape=categories))) + 
+      scale_color_manual(values = c("brown", "red", "pink", "cyan4", "darkgrey"), 
+                       na.value = "grey") +
+      geom_point() + scale_x_log10(name="# reads (log10)") + scale_y_log10(name="# motus (log10)") +
+      theme(plot.title = element_text(hjust = 0.5)) +
+      ggtitle(title)
+    
+    if(!is.na(threshold)){
+        g1 <- g1 + geom_vline(xintercept = threshold, color = "red", size=0.5)
+    }
+    print(g1)
+    if(filtering){
+        return(rownames(to_plot[to_plot$reads<threshold,]))
+    }
+}
+
+most_abund_motus_distribution <- function(metabarlist, plot_title, agg_low_motus=T){
+  
+  if(missing(plot_title)){
+      plot_title <- "Distribution of motus"
+  }
+  
+  ## get the positive control value
+  ctl_pos_name <- rownames(metabarlist$reads)
+  ## remove motus which are not present in the positive control
+  ctl_pos <- t(metabarlist$reads[, colSums(metabarlist$reads)>0, drop=F])
+  
+  ## rename motus by motus_nb_scientific_name
+  rownames(ctl_pos) <- paste("motus", 1:length(rownames(ctl_pos)), metabarlist$motus[, "scientific_name"], sep="_")
+  
+  ## get the relative abundance
+  ctl_pos_rel <- as.matrix(sweep(ctl_pos, STATS = colSums(ctl_pos), FUN = "/", MARGIN = 2))
+  
+  to_plot <- as.data.frame(do.call(rbind, lapply(colnames(ctl_pos_rel), function(ctlname){ 
+    return(data.frame("sample_name"=rep(ctlname, length(rownames(ctl_pos_rel[, ctlname, drop=F]))), 
+                      "motus"=rownames(ctl_pos_rel[, ctlname, drop=F]),
+                      "value"= as.vector(ctl_pos_rel[, ctlname, drop=F]), 
+                      "taxon"=gsub("motus_[0-9]+_", "", rownames(ctl_pos_rel[, ctlname, drop=F])),
+                      type="motus_distribution",
+                      stringsAsFactors = F))
+  })))
+  if (isTRUE(agg_low_motus)) {
+    filter <- to_plot$value<=0.01
+    low_motus <- to_plot[which(to_plot$value<=0.01), ]
+    to_plot <- to_plot[which(to_plot$value>0.01), ]
+    to_plot <- rbind(to_plot, data.frame(aggregate(low_motus["value"],
+                                                   by = list(sample_name=low_motus$sample_name), 
+                                                   FUN = sum), 
+                                         "motus"="other_motus",
+                                         "taxon"="other_taxon_under_0.01", 
+                                         "type"="motus_distribution"))
+  }
+  
+  read_data <- as.data.frame(do.call(rbind, lapply(colnames(ctl_pos), function(ctlname){ 
+    return(data.frame("sample_name"=rep(ctlname, length(rownames(ctl_pos[,ctlname, drop=F]))), 
+                      "motus"=rownames(ctl_pos[,ctlname, drop=F]),
+                      "value"=as.vector(ctl_pos[,ctlname, drop=F]), 
+                      "taxon"=gsub("motus_[0-9]+_", "", rownames(ctl_pos[,ctlname, drop=F])),
+                      type="replicate_abundance",
+                      stringsAsFactors = F))
+  })))
+  
+  if (isTRUE(agg_low_motus)) {
+    low_motus <- read_data[filter, ]
+    read_data <- read_data[which(!filter), ]
+    read_data <- rbind(read_data, data.frame(aggregate(low_motus["value"], 
+                                                       by = list(sample_name=low_motus$sample_name), 
+                                                       FUN = sum), 
+                                             "motus"="other_motus",
+                                             "taxon"="other_taxon_under_0.01", 
+                                             "type"="replicate_abundance"))
+  }
+  
+  to_plot <- rbind(read_data, to_plot)
+  ## define the control name order to keep order in x-axis
+  to_plot$sample_name <- factor(to_plot$sample_name, levels = unique(to_plot$sample_name[order(to_plot$sample_name, decreasing = F)]))
+  to_plot$type <- factor(to_plot$type, levels = c("replicate_abundance", 
+                                                  "motus_distribution"))
+  
+  ## ordering the motus value to sort motus in stack barchart for experiment data
+  to_plot$motus <- reorder(to_plot$motus, to_plot$value)
+  to_plot$motus <- factor(to_plot$motus, levels=rev(levels(to_plot$motus)))
+  
+  ggplot(to_plot[to_plot$value>0,], aes(x=sample_name, y=value, order=motus, fill=taxon)) +
+    geom_bar(inherit.aes = T, stat = "identity", colour="black") +
+    facet_wrap("type", scales = "free_y", nrow = 2) +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+          plot.title = element_text(hjust = 0.5)) +
+    # legend.position = "none") +
+    ggtitle(plot_title)
+}
+```
+
+
+```{r, load-data-clean, warning=FALSE, echo=F, message=FALSE, eval=T}
+mtbl <- readRDS(rds_file)
+```
+
+```{r, load-data, warning=FALSE, echo=F, message=FALSE, eval=F}
+# Process this chunk only one time when you load rawdata
+mtbl <- readRDS(rds_file)
+
+mtbl$motus[, "obiclean_status:blank_03_DP12_R3"] <- NA
+
+old_dp12 <- rownames(mtbl$pcrs)[grepl("DNA_plate_12", mtbl$pcrs$experiment)]
+old_dp11 <- rownames(mtbl$pcrs)[grepl("DNA_plate_11", mtbl$pcrs$experiment)]
+new_dp12 <- rownames(mtbl$pcrs)[grepl("DNA_plate_11", mtbl$pcrs$experiment)]
+new_dp11 <- rownames(mtbl$pcrs)[grepl("DNA_plate_12", mtbl$pcrs$experiment)]
+
+new_dp11 <- new_dp11[paste0("obiclean_status:", new_dp11) %in% colnames(mtbl$motus)]
+old_dp11 <- old_dp11[paste0("obiclean_status:", old_dp11) %in% colnames(mtbl$motus)]
+
+new_dp12 <- new_dp12[paste0("obiclean_status:", new_dp12) %in% colnames(mtbl$motus)]
+old_dp12 <- old_dp12[paste0("obiclean_status:", old_dp12) %in% colnames(mtbl$motus)]
+
+# mtbl$motus[, paste0("obiclean_status:", rownames(dp12)[!rownames(dp12) %in% old_dp12])] <- NA
+
+old_pos <- unlist(lapply(paste0("obiclean_status:", c(old_dp12, old_dp11)), function(old){
+  which(colnames(mtbl$motus)==old)
+}))
+
+colnames(mtbl$motus)[old_pos] <- c(paste0("obiclean_status:", new_dp12), paste0("obiclean_status:", new_dp11))
+
+
+rownames(mtbl$reads)[grepl("DNA_plate_12", 
+                           mtbl$pcrs$experiment)] <- rownames(mtbl$pcrs)[grepl("DNA_plate_11", 
+                                                                               mtbl$pcrs$experiment)]
+rownames(mtbl$reads)[grepl("DNA_plate_11",
+                           mtbl$pcrs$experiment)] <- rownames(mtbl$pcrs)[grepl("DNA_plate_12", 
+                                                                               mtbl$pcrs$experiment)]
+mtbl$reads <- mtbl$reads[rownames(mtbl$pcrs), ]
+
+mtbl$pcrs$dna_plate <- gsub("_Euka02_P.*", "", gsub(".*DNA_plate_", "", 
+                                                    mtbl$pcrs$experiment))
+
+ctl_type <- mtbl$pcrs$control_type
+ctl_type[is.na(ctl_type)] <- "sample"
+
+to_modify <- mtbl$pcrs$dna_plate==12 & 
+  ctl_type[mtbl$pcrs$dna_plate==12] == "sequencing" & 
+  ctl_type[mtbl$pcrs$dna_plate==11] != "sequencing"
+
+mtbl$pcrs[to_modify, "control_type"] <- "pcr"
+mtbl$pcrs[to_modify, "type"] <- "control"
+mtbl$pcrs[to_modify, "sample_id"] <- gsub("blank", "PCRNeg_error", mtbl$pcrs[to_modify, "sample_id"])
+rownames(mtbl$pcrs)[to_modify] <- gsub("blank", "PCRNeg_error", rownames(mtbl$pcrs)[to_modify])
+
+obi_to_rm <- colnames(mtbl$motus) %in% paste0("obiclean_status:", rownames(mtbl$reads)[to_modify])
+colnames(mtbl$motus)[obi_to_rm] <- paste0("obiclean_status:", rownames(mtbl$pcrs)[to_modify])
+rm(obi_to_rm)
+
+rownames(mtbl$reads)[to_modify] <- rownames(mtbl$pcrs)[to_modify]
+
+
+to_modify <- mtbl$pcrs$dna_plate==11 & 
+  ctl_type[mtbl$pcrs$dna_plate==11] == "sequencing" & 
+  ctl_type[mtbl$pcrs$dna_plate==12] != "sequencing"
+
+mtbl$pcrs[to_modify, "control_type"] <- "pcr"
+mtbl$pcrs[to_modify, "type"] <- "control"
+mtbl$pcrs[to_modify, "sample_id"] <- gsub("blank", "PCRNeg_error", 
+                                          mtbl$pcrs[to_modify, "sample_id"])
+rownames(mtbl$pcrs)[to_modify] <- gsub("blank", "PCRNeg_error", 
+                                       rownames(mtbl$pcrs)[to_modify])
+
+obi_to_rm <- colnames(mtbl$motus) %in% paste0("obiclean_status:", rownames(mtbl$reads)[to_modify])
+colnames(mtbl$motus)[obi_to_rm] <- paste0("obiclean_status:", rownames(mtbl$pcrs)[to_modify])
+rm(obi_to_rm)
+
+rownames(mtbl$reads)[to_modify] <- rownames(mtbl$pcrs)[to_modify]
+
+
+to_modify <- mtbl$pcrs$dna_plate==11 & 
+  ctl_type[mtbl$pcrs$dna_plate==12] == "sequencing" & 
+  ctl_type[mtbl$pcrs$dna_plate==11] != "sequencing"
+
+mtbl$pcrs[to_modify, "control_type"] <- "sequencing"
+mtbl$pcrs[to_modify, "type"] <- "control"
+mtbl$pcrs[to_modify, "sample_id"] <- paste0("blank_error_", 
+                                            c(1:length(mtbl$pcrs[to_modify, "sample_id"])), 
+                                            "_DP", mtbl$pcrs[to_modify, "dna_plate"],
+                                            gsub(".*_R", "_R", rownames(mtbl$pcrs)[to_modify]))
+rownames(mtbl$pcrs)[to_modify] <- paste0("blank_error_", 
+                                         c(1:length(mtbl$pcrs[to_modify, "sample_id"])), 
+                                         "_DP", mtbl$pcrs[to_modify, "dna_plate"],
+                                         gsub(".*_R", "_R", rownames(mtbl$pcrs)[to_modify]))
+
+obi_to_rm <- colnames(mtbl$motus) %in% paste0("obiclean_status:", rownames(mtbl$reads)[to_modify])
+colnames(mtbl$motus)[obi_to_rm] <- paste0("obiclean_status:", rownames(mtbl$pcrs)[to_modify])
+rm(obi_to_rm)
+
+rownames(mtbl$reads)[to_modify] <- rownames(mtbl$pcrs)[to_modify]
+
+
+to_modify <- mtbl$pcrs$dna_plate==12 & 
+  ctl_type[mtbl$pcrs$dna_plate==11] == "sequencing" & 
+  ctl_type[mtbl$pcrs$dna_plate==12] != "sequencing"
+
+mtbl$pcrs[to_modify, "control_type"] <- "sequencing"
+mtbl$pcrs[to_modify, "type"] <- "control"
+mtbl$pcrs[to_modify, "sample_id"] <- paste0("blank_error_", 
+                                            c(1:length(mtbl$pcrs[to_modify, "sample_id"])), 
+                                            "_DP", mtbl$pcrs[to_modify, "dna_plate"],
+                                            gsub(".*_R", "_R", rownames(mtbl$pcrs)[to_modify]))
+rownames(mtbl$pcrs)[to_modify] <- paste0("blank_error_", 
+                                         c(1:length(mtbl$pcrs[to_modify, "sample_id"])), 
+                                         "_DP", mtbl$pcrs[to_modify, "dna_plate"],
+                                         gsub(".*_R", "_R", rownames(mtbl$pcrs)[to_modify]))
+
+obi_to_rm <- colnames(mtbl$motus) %in% paste0("obiclean_status:", rownames(mtbl$reads)[to_modify])
+colnames(mtbl$motus)[obi_to_rm] <- paste0("obiclean_status:", rownames(mtbl$pcrs)[to_modify])
+rm(obi_to_rm)
+
+rownames(mtbl$reads)[to_modify] <- rownames(mtbl$pcrs)[to_modify]
+
+saveRDS(mtbl, file = rds_file)
+
+```
+
+
+```{r, load-dependencies, echo=F, message=FALSE, warning=FALSE, results='hide'}
+.libPaths( c( .libPaths(), "/bettik/lionnetc/my_r_libraries/") )
+library("metabaR")
+library("ggplot2")
+library("cowplot")
+library("ggrepel")
+library("gridExtra")
+library("ade4")
+library("RColorBrewer")
+library("DT")
+library("stringr")
+library("vegan")
+library("ape")
+library("reshape2")
+```
+
+## PCR template {.tabset}
+```{r, pcr-template-rawdata, fig.height=8, fig.width=8, warning=FALSE, message=FALSE, results='asis', echo=F}
+for(lib in unique(mtbl$pcrs$library)){
+  mtb_lib <- subset_metabarlist(mtbl, "pcrs", mtbl$pcrs$library==lib)
+  mtb_lib$pcrs$plate_no <- mtb_lib$pcrs$dna_plate
+  cat(paste0("### ",lib," {.tabset}\n"))
+  cat(paste0("#### All\n"))
+  print(ggpcrtag(mtb_lib, taglist = as.character(tag_list), legend_title = "Reads count") + 
+          ggtitle(paste0("PCR template of library ", lib, " for primer Euka02")) + 
+          theme(plot.title = element_text(hjust = 0.5)))
+  cat("\n\n")
+  cat(paste0("#### By plate\n"))
+  print(ggpcrplate(mtb_lib) + 
+          ggtitle(paste0("PCR template of library ", lib, " for primer Euka02")) + 
+          theme(plot.title = element_text(hjust = 0.5)))
+  cat("\n\n")
+  rm(mtb_lib)
+  gc_stat <- gc()
+}
+```
+
+## {.unlisted .unnumbered}
+
+**Explanation:**
+
+* This plot shows the number of reads for each pcr replicates in the full pcr design (with all plates together). 
+
+* It's allows you to visualize the shared tags between plates. The forward and reverse tags used are respectively displayed in row and in column. The boxplots above and to the right show the distribution of the number of reads obtained for each tag. These representations allow you to check if the reads counts are uniformly distributed between lines and columns.
+
+* The last information gives by this plot is the controls position in plate. Four controls are used to check the quality of the lab workflow and the contamination. Two types of control are used :
+
+  * negative controls (detection of contaminants) :
+  
+    + extraction controls, corresponding to PCR amplification of an extraction where the DNA template was replaced by extraction buffer.
+  
+    + pcr controls, corresponding to pcr amplification where the DNA template was replaced by PCR buffer or sterile water.
+  
+    + sequencing control, corresponding to wells where neither DNA template nor PCR reagents were introduced: these are the unused tag combinations. These controls are useful to detect tag-jumps ([Schnell, Bohmann, and Gilbert 2015; reviewed in Zinger et al. 2019](https://doi.org/10.1111/1755-0998.12402)). 
+
+  * positive controls, corresponding to pcr amplifications of known biological samples or DNA template like mock community or common sample use in many project. These controls are useful to check if the experimental process has work well.
+
+
+## Statistic tables {.tabset}
+### PCR Plates statistic {.tabset}
+```{r, reads-distrib-by-plate, message=FALSE, warning=FALSE, results="asis", echo=F}
+for(lib in unique(mtbl$pcrs$library)){
+  mtb_lib <- subset_metabarlist(mtbl, "pcrs", mtbl$pcrs$library==lib)
+  cat(paste0("#### ",lib,"\n"))
+  out <- data.frame(aggregate(rowSums(mtb_lib$reads), by = list(plate_nb=mtb_lib$pcrs$plate_no), sum))
+  out <- cbind(out, as.vector(table(subset_metabarlist(mtb_lib, "pcrs", mtb_lib$pcrs$type=="sample" |
+                                                         mtb_lib$pcrs$control_type=="positive")$pcrs$plate_no)))
+  out[, "mean # reads by replicate"] <- round(out[, 2]/out[, 3])
+  
+  print(htmltools::tagList(DT::datatable(out,
+                                         rownames = NULL,
+                                         colnames = c("plate number", "# reads", 
+                                                      "# replicates", "mean # reads by replicate"),
+                                         extensions = 'Buttons',
+                                         options = list(dom = 'Bfrtip',
+                                                        buttons = c('excel', "csv"))) %>% 
+                             formatStyle('mean # reads by replicate', 
+                                         target = 'row', 
+                                         backgroundColor = styleInterval(c(6000, 20000), 
+                                                                         c('orange', NA, 'orange')))))
+  cat("\n\n")
+}
+rm(out)
+gc_stat <- gc()
+```
+
+```{r, blk-description, message=FALSE, warning=FALSE, results="asis", echo=F}
+for (ctl in c("sequencing", "pcr", "extraction")){
+  cat(paste0("### ", str_to_title(ctl), " controls statistics \n"))
+  ctl_data <- subset_metabarlist(mtbl, "pcrs", !is.na(mtbl$pcrs$control_type) & 
+                                   mtbl$pcrs$control_type==ctl)
+  
+  out <- sort(rowSums(ctl_data$reads), decreasing = T)
+  out <- data.frame(replicates=names(out), 
+                    "DNA plate"=ctl_data$pcrs[names(out), "dna_plate"],
+                    "Plate num"=ctl_data$pcrs[names(out), "plate_no"],
+                    "Plate col"=ctl_data$pcrs[names(out), "plate_col"],
+                    "Plate row"=ctl_data$pcrs[names(out), "plate_row"],
+                    "Library"=ctl_data$pcrs[names(out), "library"],
+                    "# reads"=as.vector(out), 
+                    "# motus"=rowSums(ctl_data$reads>0)[names(out)],
+                    "max motus reads count"=apply(ctl_data$reads, 1, max)[names(out)],
+                    "# rare motus (read count<10)"=apply(ctl_data$reads, 1, function(x){ sum(x < 10 & x > 0) })[names(out)],
+                    "# abundant motus (read count>=10)"=apply(ctl_data$reads, 1, function(x){ sum(x >= 10) })[names(out)],
+                    check.names = F)
+  
+  print(htmltools::tagList(DT::datatable(out,
+                rownames = F,
+                extensions = 'Buttons',
+                options = list(dom = 'Bfrtip',
+                               buttons = c('excel', "csv"),
+                               scrollX='400px'))))
+
+  rm(out)
+  rm(ctl_data)
+  gc_stat <- gc()
+  
+  cat("\n\n")
+}
+```
+
+
+## Sequencing depth {.tabset}
+### Richness
+```{r, sequencing-depth-richness, fig.height=8, fig.width=8, message=FALSE, warning=FALSE}
+ggSeqEffort(mtbl)
+```
+
+### Logs
+```{r, sequencing-depth-logs, fig.height=8, fig.width=8, message=FALSE, warning=FALSE}
+identify_disfunctional_PCR(mtbl, title="Check sequencing depth", filtering = FALSE)
+```
+
+
+## Reads and motus distribution by pcr type {.tabset}
+### All
+```{r boxplot-by-replicate-type-all, fig.height=8, fig.width=8, warning=FALSE, message=FALSE}
+ggBoxTypeStat(mtbl)
+```
+
+```{r boxplot-by-replicate-type, fig.height=8, fig.width=8, warning=FALSE, message=FALSE, results='asis'}
+for(dnaplate in sort(unique(mtbl$pcrs$dna_plate))){
+  mtb_lib <- subset_metabarlist(mtbl, "pcrs", mtbl$pcrs$dna_plate==dnaplate)
+  cat(paste0("### DNA plate ",dnaplate,"\n"))
+  print(ggBoxTypeStat(mtb_lib))
+  cat("\n\n")
+  rm(mtb_lib)
+  gc_stat <- gc()
+}
+rm(gc_stat)
+```
+
+
+## Positive control
+```{r, positive-control-rawdata, fig.height=12, fig.width=32, warning=FALSE, message=FALSE}
+positive_controls <- subset_metabarlist(mtbl, "pcrs", 
+                                        mtbl$pcrs$type=="control" & 
+                                          mtbl$pcrs$control_type=="positive")
+
+most_abund_motus_distribution(positive_controls, 
+                              "Distribution of motus in positive control replicates", agg_low_motus=FALSE) +
+theme(legend.position = "none")
+
+rm(positive_controls)
+```
+
+
+## Check well switch {.tabset}
+To make the projection cleaner, the reads counts are normalized with the Hellinger method to reduce the impact of extreme values. 
+
+### All
+```{r check-well-switch-all, fig.height=24, fig.width=24, warning=FALSE, message=FALSE}
+to_build <- rownames(mtbl$reads) %in% sample(rownames(mtbl$reads), 2000, replace = F)
+mat <- decostand(mtbl$reads, "hellinger")
+
+res.pca <- dudi.pca(mat[to_build, ], scannf = F, nf=2, scale = F)
+
+res.pca$li <- rbind(res.pca$li, suprow(res.pca, mat[!to_build, ])$lisup)
+
+rm(mat)
+rm(to_build)
+gc_stat <- gc()
+
+categories <- mtbl$pcrs[rownames(res.pca$li), "control_type"]
+categories[is.na(categories)] <- "sample"
+categories2 <- mtbl$pcrs[rownames(res.pca$li), "library"]
+ggplot(res.pca$li,
+       aes(x = Axis1, y = Axis2, 
+           color=categories,
+           shape=categories2)) +
+  geom_point(size = 1.5) + 
+  theme(plot.title = element_text(hjust = 0.5)) +
+  ggtitle(paste0("PCA by pcr type - Rawdata - all - Euka02")) + 
+  guides(color=guide_legend(ncol=2))
+
+rm(res.pca)
+rm(categories)
+rm(categories2)
+rm(mtb_lib)
+gc_stat <- gc()
+```
+
+```{r, check-well-switch, fig.height=12, fig.width=12, warning=F, message=F, results='asis'}
+for(dnaplate in sort(unique(mtbl$pcrs$dna_plate))){
+  mtb_lib <- subset_metabarlist(mtbl, "pcrs", mtbl$pcrs$dna_plate==dnaplate)
+  
+  cat(paste0("### DNA plate ",dnaplate,"\n"))
+  
+  res.pca <- dudi.pca(decostand(mtb_lib$reads, "hellinger"), scannf = F, nf=2, scale = F)
+  categories <- mtb_lib$pcrs[rownames(res.pca$li), "control_type"]
+  categories[is.na(categories)] <- "sample"
+  categories2 <- mtb_lib$pcrs[rownames(res.pca$li), "library"]
+  print(ggplot(res.pca$li,
+         aes(x = Axis1, y = Axis2, 
+             color=categories,
+             shape=categories2)) +
+    geom_point(size = 2) + 
+    theme(plot.title = element_text(hjust = 0.5)) +
+    ggtitle(paste0("PCA by pcr type - Rawdata - DNA plate ", dnaplate," - Euka02")) + 
+    guides(color=guide_legend(ncol=2)))
+  
+  cat("\n\n")
+  
+  rm(res.pca)
+  rm(categories)
+  rm(categories2)
+  rm(mtb_lib)
+  gc_stat <- gc()
+}
+
+```
+
+
+```{r, remove-gc-rawdata-stat, fig.height=8, fig.width=8, warning=FALSE}
+rm(gc_stat)
+```

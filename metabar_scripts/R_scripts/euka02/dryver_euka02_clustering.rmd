@@ -1,0 +1,195 @@
+---
+output: 
+  html_fragment:
+    keep_md: true
+    smart: true
+    md_extensions: +autolink_bare_uris+tex_math_single_backslash
+params:
+    # lib_dir: /home/lionnetc/travail/document/DRYVER/euka02
+    lib_dir: /bettik/lionnetc/dryver/euka02_merged/run_clean_report
+    rds_path: rds_files/dryver_euka02_wo_disfunctional-pcrs.rds
+    old_rds_mtbl: rds_files/euka02_clean_7.rds
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE, echo=F}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+
+```{r init-variable, echo=F, message=FALSE, warning=FALSE}
+lib_dir <- params$lib_dir
+rds_file <- file.path(lib_dir, params$rds_path)
+
+rev_tag <- "acacacac,acagcaca,gtgtacat,tatgtcag,tagtcgca,tactatac,actagatc,gatcgcga,cgctctcg,gtcgtaga,gtcacgtc,gactgatg,agactatg,gcgtcagc,tgacatca,acatgtgt,gtacgact,atgatcgc,acgacgag,catcagtc,atcagtca,tctactga,gatgatct,ctgcgtac,agcgacta,tcagtgtc,actctgct,atatagcg,ctatgcta,tcgcgctg,agcacagt,tagctagt,agtgctac,cgtataca,cgagtcgt,cacatgat"
+
+fwd_tag <- "acacacac,acagcaca,gtgtacat,tatgtcag,tagtcgca,tactatac,actagatc,gatcgcga,cgctctcg,gtcgtaga,gtcacgtc,gactgatg,agactatg,gcgtcagc,tgacatca,acatgtgt,gtacgact,atgatcgc,acgacgag,catcagtc,atcagtca,tctactga,gatgatct,ctgcgtac,agcgacta,tcagtgtc,actctgct,atatagcg,ctatgcta,tcgcgctg,agcacagt,tagctagt"
+
+tag_list <- union(unlist(strsplit(fwd_tag, ",")), 
+                  unlist(strsplit(rev_tag, ",")))
+```
+
+
+```{r, load-dependencies, echo=F, message=FALSE, warning=FALSE, results='hide'}
+.libPaths( c( .libPaths(), "/bettik/lionnetc/my_r_libraries/") )
+library("metabaR")
+library("ggplot2")
+library("cowplot")
+library("DT")
+library("stringr")
+library("vegan")
+library("jsonlite")
+library("reshape2")
+```
+
+```{r, function, echo=F, warning=F, message=F}
+## Function
+make_fasta <- function(mtbl, fasta_name){
+  fasta_data <- subset_metabarlist(mtbl, "motus", 
+                                   colSums(mtbl$reads) > 0)
+  
+  samples_dict <- apply(fasta_data$reads, 2, function(col){gsub("\"", "\'", 
+                                                                toJSON(unbox(data.frame(t(col[col>0])))))})
+  
+  annotation_data <- data.frame("count"=as.character(colSums(fasta_data$reads)),
+                                "merged_sample"=samples_dict,
+                                "taxid"=as.character(fasta_data$motus$taxid),
+                                "best_identity"=paste("{","'Euka02.DB'", ":", 
+                                                      fasta_data$motus$`best_identity:Euka02.DB`, "}", 
+                                                      sep=""),
+                                "seq_length"=fasta_data$motus$seq_length)
+  
+  fasta_generator(fasta_data, output_file=fasta_name, 
+                  annotation = annotation_data)
+}
+```
+
+```{r, load-data, warning=FALSE, echo=F, message=F, eval=T}
+mtbl <- readRDS(rds_file)
+old_mtbl <- readRDS(file.path(lib_dir, params$old_rds_mtbl))
+```
+
+```{r, generate_fasta_file-for-clustering, eval=T, warning=F, message=FALSE}
+# Generate fasta for clustering
+fasta_name <- file.path(lib_dir, "clust_files", "euka02_after-R-cleaning.fasta")
+make_fasta(subset_metabarlist(mtbl, "motus", !mtbl$motus$not_clustered), fasta_name)
+```
+
+```{bash, eval=F}
+source /nfs_scratch/LECA_ENVIRONEMENT/env.bash
+module load obitools
+module load sumaclust
+
+LIBDIR="/bettik/lionnetc/dryver/euka02_merged/run_clean_report/clust_files"
+
+sumaclust -t 0.97 -p 2 -e -O $LIBDIR/euka02_motus_clustering_map.txt $LIBDIR/euka02_after-R-cleaning.fasta > $LIBDIR/euka02_after-R-cleaning.clust.fasta
+
+obiannotate -k cluster_weight -k cluster -k cluster_score -k cluster_center $LIBDIR/euka02_after-R-cleaning.clust.fasta | obitab -o > $LIBDIR/euka02_after-R-cleaning.clust.tab
+```
+
+```{r, add-clustering-information, warning=F, message=F, eval=T}
+## Add clustering information
+cluster_mtd <- read.csv2(file.path(lib_dir, "clust_files", "euka02_after-R-cleaning.clust.tab"), 
+                         header = T, check.names = F, 
+                         stringsAsFactors = F, sep="\t")
+rownames(cluster_mtd) <- cluster_mtd$id
+cluster_mtd <- cluster_mtd[,!colnames(cluster_mtd) %in% c("id", "definition", "sequence")]
+mtbl$motus[rownames(cluster_mtd), colnames(cluster_mtd)] <- cluster_mtd
+
+mtbl$motus[mtbl$motus$not_clustered, colnames(cluster_mtd)]  <- cbind(rownames(mtbl$motus[mtbl$motus$not_clustered,]), 
+                                                                      TRUE, 1.00, 
+                                                                      colSums(mtbl$reads[,mtbl$motus$not_clustered]))
+
+saveRDS(mtbl, file.path(lib_dir, "rds_files", "euka02_clean_clustered_8.rds"))
+```
+
+```{r, aggregate-motus, warning=F, eval=T}
+## Build matrix with clustered sequence
+# mtbl <- readRDS(file.path(lib_dir, "rds_files", "euka02_clean_clustered_8.rds"))
+clust_mtbl <- aggregate_motus(mtbl, mtbl$motus$cluster)
+saveRDS(clust_mtbl, file.path(lib_dir, "rds_files", "euka02_clean_motus_9.rds"))
+```
+
+```{r, warning=F, message=F, eval=F}
+mtbl <- readRDS(file.path(lib_dir, "rds_files", "euka02_clean_clustered_8.rds"))
+old_mtbl <- readRDS(file.path(lib_dir, "rds_files", "euka02_clean_7.rds"))
+clust_mtbl <- readRDS(file.path(lib_dir, "rds_files", "euka02_clean_motus_9.rds"))
+```
+
+
+## PCR template before clustering step {.tabset}
+```{r, pcr-template-without-cluster, fig.height=8, fig.width=8, warning=FALSE, message=FALSE, results='asis'}
+for(lib in unique(mtbl$pcrs$library)){
+  old_mtb_lib <- subset_metabarlist(old_mtbl, "pcrs", old_mtbl$pcrs$library==lib)
+  mtb_lib <- subset_metabarlist(mtbl, "pcrs", mtbl$pcrs$library==lib)
+  
+  rm_pcr <- rownames(old_mtb_lib$pcrs)[!rownames(old_mtb_lib$pcrs) %in% rownames(mtb_lib$pcrs)]
+  mtb_lib$reads <- as.data.frame(mtb_lib$reads)
+  mtb_lib$reads[rm_pcr, ] <- 0
+  mtb_lib$reads <- as.matrix(mtb_lib$reads)
+  mtb_lib$pcrs[rm_pcr,] <- old_mtb_lib$pcrs[rm_pcr,]
+  mtb_lib$samples <- old_mtb_lib$samples
+  
+  mtb_lib$pcrs$plate_no <- mtb_lib$pcrs$dna_plate
+  cat(paste0("### ",lib," \n"))
+  print(ggpcrtag(mtb_lib, taglist = as.character(tag_list), legend_title = "Motus count",
+                 FUN = function(metabarlist) {rowSums(metabarlist$reads>0)}) + 
+          ggtitle(paste0("PCR template of library ", lib, " for primer Euka02 without clustering")) + 
+          theme(plot.title = element_text(hjust = 0.5)))
+  cat("\n\n")
+  rm(mtb_lib)
+  gc_stat <- gc()
+}
+```
+
+
+## PCR template after clustering step {.tabset}
+```{r, pcr-template-with-cluster, fig.height=8, fig.width=8, warning=FALSE, message=FALSE, results='asis'}
+for(lib in unique(clust_mtbl$pcrs$library)){
+  mtb_lib <- subset_metabarlist(clust_mtbl, "pcrs", clust_mtbl$pcrs$library==lib)
+  old_mtb_lib <- subset_metabarlist(old_mtbl, "pcrs", old_mtbl$pcrs$library==lib)
+  
+  rm_pcr <- rownames(old_mtb_lib$pcrs)[!rownames(old_mtb_lib$pcrs) %in% rownames(mtb_lib$pcrs)]
+  mtb_lib$reads <- as.data.frame(mtb_lib$reads)
+  mtb_lib$reads[rm_pcr, ] <- 0
+  mtb_lib$reads <- as.matrix(mtb_lib$reads)
+  mtb_lib$pcrs[rm_pcr,] <- old_mtb_lib$pcrs[rm_pcr,]
+  mtb_lib$samples <- old_mtb_lib$samples
+  
+  mtb_lib$pcrs$plate_no <- mtb_lib$pcrs$dna_plate
+  cat(paste0("### ",lib," \n"))
+  print(ggpcrtag(mtb_lib, taglist = as.character(tag_list), legend_title = "Motus count",
+                 FUN = function(metabarlist) {rowSums(metabarlist$reads>0)}) + 
+          ggtitle(paste0("PCR template of library ", lib, " for primer Euka02 with clustering")) + 
+          theme(plot.title = element_text(hjust = 0.5)))
+  cat("\n\n")
+  rm(mtb_lib)
+  gc_stat <- gc()
+}
+```
+
+## Motus distribution
+```{r, motus-distrib-by-manip, fig.height=10, fig.width=10, warning=FALSE, message=FALSE, results='asis'}
+check <- melt(data.frame(Country=mtbl$samples[clust_mtbl$pcrs[clust_mtbl$pcrs$type=="sample", "sample_id"], "Country"],
+                         after_clustering=as.vector(rowSums(clust_mtbl$reads[clust_mtbl$pcrs$type=="sample", ]>0)), 
+                         before_clustering=as.vector(rowSums(mtbl$reads[clust_mtbl$pcrs$type=="sample", ]>0)), 
+                         stringsAsFactors = F), id.vars="Country")
+
+check$variable <- factor(check$variable, levels=c("before_clustering", "after_clustering"))
+  
+ggplot(check, aes(x=Country, y=value, color=variable)) + 
+  geom_boxplot() + theme_bw() + 
+  geom_point(position=position_jitterdodge(), alpha=0.2) + 
+  labs(color="clustering status") +
+  ylab("motus count") +
+  theme(axis.text.x = element_text(angle=45, h=1),
+        plot.title = element_text(hjust = 0.5)) +
+  ggtitle("Distribution of motus by country before and after clustering")
+
+```
+
+```{r, remove-gc-pcr-conta, fig.height=8, fig.width=8, warning=FALSE}
+rm(gc_stat)
+rm(clust_mtbl)
+```

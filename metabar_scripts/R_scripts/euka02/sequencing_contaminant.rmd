@@ -1,0 +1,208 @@
+---
+output: 
+  html_fragment:
+    keep_md: true
+    smart: true
+    md_extensions: +autolink_bare_uris+tex_math_single_backslash
+params:
+    lib_dir: /bettik/lionnetc/dryver/euka02_merged/run_clean_report
+    rds_path: rds_files/euka02_all_0.rds
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE, echo=F}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+
+```{r init-variable, echo=F, message=FALSE, warning=FALSE}
+lib_dir <- params$lib_dir
+rds_file <- file.path(lib_dir, params$rds_path)
+rev_tag <- "acacacac,acagcaca,gtgtacat,tatgtcag,tagtcgca,tactatac,actagatc,gatcgcga,cgctctcg,gtcgtaga,gtcacgtc,gactgatg,agactatg,gcgtcagc,tgacatca,acatgtgt,gtacgact,atgatcgc,acgacgag,catcagtc,atcagtca,tctactga,gatgatct,ctgcgtac,agcgacta,tcagtgtc,actctgct,atatagcg,ctatgcta,tcgcgctg,agcacagt,tagctagt,agtgctac,cgtataca,cgagtcgt,cacatgat"
+
+fwd_tag <- "acacacac,acagcaca,gtgtacat,tatgtcag,tagtcgca,tactatac,actagatc,gatcgcga,cgctctcg,gtcgtaga,gtcacgtc,gactgatg,agactatg,gcgtcagc,tgacatca,acatgtgt,gtacgact,atgatcgc,acgacgag,catcagtc,atcagtca,tctactga,gatgatct,ctgcgtac,agcgacta,tcagtgtc,actctgct,atatagcg,ctatgcta,tcgcgctg,agcacagt,tagctagt"
+
+tag_list <- union(unlist(strsplit(fwd_tag, ",")), 
+                  unlist(strsplit(rev_tag, ",")))
+```
+
+
+```{r, load-data, warning=FALSE, echo=F, message=FALSE}
+mtbl <- readRDS(rds_file)
+```
+
+
+```{r, load-dependencies, echo=F, message=FALSE, warning=FALSE, results='hide'}
+.libPaths( c( .libPaths(), "/bettik/lionnetc/my_r_libraries/") )
+library("metabaR")
+library("ggplot2")
+library("cowplot")
+library("ggrepel")
+library("gridExtra")
+library("ade4")
+library("RColorBrewer")
+library("DT")
+library("stringr")
+library("vegan")
+library("ape")
+library("reshape2")
+```
+
+## Sequencing control
+This step remove sequencing contaminants based on MOTUs detected in sequencing control replicates. Sequencing controls corresponds to empty wells in the PCR plate and should not contain any sequence. However, sequences can be detected in these wells and are generatd through different processes. These sequences generally correspond to sequences generated during the library construction step when sequences from two different wells are merged during the PCR cycles required for the insertion of the sequencing barcode. This mechanism is called tagjump. Sequencing controls can also be used to detect physical jumps between PCR template wells that may occur during the PCR plates setup.
+
+### Identify motus found in sequencing control
+```{r, tag-motus-in-sequencing-control, fig.height=8, fig.width=8, warning=FALSE}
+for(lib in unique(mtbl$pcrs$library)){
+  blank <- subset_metabarlist(mtbl, "pcrs", mtbl$pcrs$type=="control" & 
+                                mtbl$pcrs$control_type=="sequencing" & mtbl$pcrs$library==lib)
+  mtbl$motus[colnames(blank$reads), paste0(lib, ":sequencing_control:nb_max")] <- apply(blank$reads, 2, max)
+  mtbl$motus[is.na(mtbl$motus[, paste0(lib, ":sequencing_control:nb_max")]), paste0(lib, ":sequencing_control:nb_max")] <- 0
+  
+  mtbl$motus[colnames(blank$reads), paste0(lib, ":sequencing_control:sum")] <- colSums(blank$reads)
+  mtbl$motus[is.na(mtbl$motus[, paste0(lib, ":sequencing_control:sum")]), paste0(lib, ":sequencing_control:sum")] <- 0
+  
+  mtbl$motus[colnames(blank$reads), paste0(lib, ":sequencing_control:nb_occurence")] <- colSums(blank$reads>0)
+  mtbl$motus[is.na(mtbl$motus[, paste0(lib, ":sequencing_control:nb_occurence")]), paste0(lib, ":sequencing_control:nb_occurence")] <- 0
+  rm(blank)
+  gc_stat <- gc()
+}
+
+blank <- subset_metabarlist(mtbl, "pcrs", mtbl$pcrs$type=="control" & 
+                              mtbl$pcrs$control_type=="sequencing")
+
+mtbl$motus[colnames(blank$reads), "all:sequencing_control:nb_max"] <- apply(blank$reads, 2, max)
+mtbl$motus[is.na(mtbl$motus[, "all:sequencing_control:nb_max"]), "all:sequencing_control:nb_max"] <- 0
+
+mtbl$motus[colnames(blank$reads), "all:sequencing_control:sum"] <- colSums(blank$reads)
+mtbl$motus[is.na(mtbl$motus[, "all:sequencing_control:sum"]), "all:sequencing_control:sum"] <- 0
+
+mtbl$motus[colnames(blank$reads), "all:sequencing_control:nb_occurence"] <- colSums(blank$reads>0)
+mtbl$motus[is.na(mtbl$motus[, "all:sequencing_control:nb_occurence"]), "all:sequencing_control:nb_occurence"] <- 0
+```
+
+
+```{r, blank-information, warning=FALSE, message=F}
+### Sequencing control information
+out <- mtbl$motus[rownames(blank$motus),
+                     c("scientific_name", 
+                       sort(grep("sequencing_control", 
+                                 colnames(mtbl$motus), value = T)), 
+                       "best_identity:Euka02.DB", "count")]
+
+DT::datatable(out[order(out[, "all:sequencing_control:sum"], decreasing = T),],
+              extensions = 'Buttons',
+              options = list(dom = 'Bfrtip',
+                             buttons = c('excel', "csv"),
+                             scrollX='400px'))
+
+rm(out)
+rm(blank)
+```
+
+
+### Reduce noise added by sequencing {.tabset}
+To reduce tagjumps noise, for each motus present in blanks, theirs max number of reads is subtracted in each replicate. 
+
+```{r, reduce-noise-tagjump , warning=FALSE}
+mtbl_clean <- mtbl
+for(lib in unique(mtbl_clean$pcrs$library)){
+  clean <- sweep(mtbl_clean$reads[mtbl_clean$pcrs$library==lib,], MARGIN = 2, 
+                 STATS = mtbl_clean$motus[, paste0(lib, ":sequencing_control:nb_max")], 
+                 FUN = "-")
+  
+  clean[clean<0] <- 0
+  
+  mtbl_clean$reads[mtbl_clean$pcrs$library==lib,] <- clean
+
+  rm(clean)
+  gc_stat <- gc()
+}
+```
+
+#### PCR template after filtering {.tabset}
+```{r, reduce-noise-tagjump-template , fig.height=8, fig.width=8, warning=FALSE, results='asis'}
+for(lib in unique(mtbl_clean$pcrs$library)){
+    mtb_lib <- subset_metabarlist(mtbl_clean, "pcrs", mtbl_clean$pcrs$library==lib)
+    cat(paste0("##### ",lib,"\n"))
+    print(ggpcrtag(mtb_lib, taglist = as.character(tag_list), legend_title = "Reads count") + 
+            ggtitle(paste("PCR template of library ", lib, 
+                          " for primer Euka02 after tagjumpslayer", sep="")) + 
+            theme(plot.title = element_text(hjust = 0.5)))
+    cat("\n\n")
+    rm(mtb_lib)
+    gc_stat <- gc()
+}
+```
+
+#### Percentage of removed reads {.tabset}
+##### All
+```{r, reduce-noise-tagjump-ratio-all, fig.height=8, fig.width=8, warning=FALSE}
+check <- data.frame(pcr_type=mtbl$pcrs[,"control_type"], 
+                    value=(rowSums(mtbl$reads)-rowSums(mtbl_clean$reads))/rowSums(mtbl$reads)*100,
+                    stringsAsFactors = F)
+check <- check[!is.na(check$value),]
+check$pcr_type[is.na(check$pcr_type)] <- "sample"
+check$pcr_type <- factor(check$pcr_type,
+                           levels = c("extraction", "pcr", "sequencing", "positive", "sample"))
+  
+ggplot(check, aes(x=pcr_type, y=value, color=pcr_type)) + 
+  geom_boxplot() + theme_bw() + 
+  xlab("PCR type") +
+  ylab("Percentage (%)") +
+  geom_jitter(alpha=0.2) + 
+  scale_color_manual(values = c("brown", "red", "pink", "cyan4", "darkgrey"), 
+                     na.value = "grey") +
+  theme(axis.text.x = element_text(angle=45, h=1)) +
+  ggtitle("Percentage of removed reads by PCR type")
+
+rm(check)
+gc_stat <- gc()
+```
+
+```{r reduce-noise-tagjump-ratio, fig.height=8, fig.width=8, warning=FALSE, message=FALSE, results='asis'}
+for(lib in sort(unique(mtbl$pcrs$library))){
+  mtb_lib <- subset_metabarlist(mtbl, "pcrs", mtbl$pcrs$library==lib)
+  mtb_lib_clean <- subset_metabarlist(mtbl_clean, "pcrs", mtbl$pcrs$library==lib)
+  cat(paste0("##### ", lib, "\n"))
+  
+  check <- data.frame(pcr_type=mtb_lib$pcrs[,"control_type"], 
+                    value=(rowSums(mtb_lib$reads)-rowSums(mtb_lib_clean$reads))/rowSums(mtb_lib$reads)*100,
+                    stringsAsFactors = F)
+  check <- check[!is.na(check$value),]
+  check$pcr_type[is.na(check$pcr_type)] <- "sample"
+  check$pcr_type <- factor(check$pcr_type,
+                             levels = c("extraction", "pcr", "sequencing", "positive", "sample"))
+    
+  print(ggplot(check, aes(x=pcr_type, y=value, color=pcr_type)) + 
+          geom_boxplot() + theme_bw() + 
+          xlab("PCR type") +
+          ylab("Percentage (%)") +
+          geom_jitter(alpha=0.2) + 
+          scale_color_manual(values = c("brown", "red", "pink", "cyan4", "darkgrey"), 
+                             na.value = "grey") +
+          theme(axis.text.x = element_text(angle=45, h=1)) +
+          ggtitle(paste0("Percentage of remove reads by PCR type - lib ", lib)))
+
+  cat("\n\n")
+  rm(mtb_lib)
+  rm(mtb_lib_clean)
+  rm(check)
+  gc_stat <- gc()
+}
+rm(gc_stat)
+```
+
+```{r, reduce-noise-tagjump-apply, warning=FALSE}
+mtbl <- mtbl_clean
+saveRDS(mtbl, file = file.path(lib_dir, "rds_files", "euka02_all_sequencing_clean_1.rds"))
+
+rm(mtbl_clean)
+gc_stat <- gc()
+```
+
+
+```{r, remove-gc-rawdata-stat, fig.height=8, fig.width=8, warning=FALSE}
+rm(gc_stat)
+```

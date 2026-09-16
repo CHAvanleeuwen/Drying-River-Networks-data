@@ -1,0 +1,98 @@
+---
+output: 
+  html_fragment:
+    keep_md: true
+    smart: true
+    md_extensions: +autolink_bare_uris+tex_math_single_backslash
+  #md_document:
+    #variant: markdown+autolink_bare_uris+tex_math_single_backslash
+
+params:
+    lib_dir: /bettik/lionnetc/dryver/bact02_merged/run_clean_report
+    rds_path: rds_file_name
+    out_file: NULL
+---
+
+```{r setup, include=FALSE, echo=F}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r init-variable, echo=F}
+lib_dir <- params$lib_dir
+rds_file <- file.path(lib_dir, params$rds_path)
+if(is.null(params$out_file)){
+	out_file <- file.path(lib_dir, "check_pcr")
+}else{
+	out_file <- file.path(lib_dir, params$out_file)
+}
+```
+
+
+```{r, load-dependencies, echo=F, results='hide', message=F, warning=F}
+.libPaths( c( .libPaths(), "/bettik/lionnetc/my_r_libraries/") )
+library("metabaR")
+library("ggplot2")
+library("cowplot")
+library("ade4")
+library("vegan")
+```
+
+
+```{r, load-data, warning=FALSE, echo=F}
+mtbl <- readRDS(rds_file)
+```
+
+
+```{r, set-titles, warning=FALSE, echo=F, results='asis'}
+if(as.numeric(unique(mtbl$samples$Campaign)) > 0){
+	section_title <- paste0("Campaign ", as.character(unique(mtbl$samples$Campaign)))
+	subsection_title <- as.character(unique(mtbl$samples$Sample_type))
+	cat(paste0("\n### ", section_title, " {.tabset}\n\n"))
+	cat(paste0("\n#### ", subsection_title, "\n\n"))
+}else{
+	cat("\n### Positive Controls - Soil \n\n")
+}
+```
+
+##### Density plot {.tabset}
+```{r, pcrslayer, warning=FALSE, eval=T}
+check_pcr <- metabaR:::pcr_outlier(mtbl, graphics = TRUE)
+saveRDS(check_pcr, out_file)
+```
+
+##### {-}
+
+**Explanation:**
+
+* This plot shows the density distribution of two distances (within and between samples) :
+  + the blue line corresponds to the between distance density
+  + the black line corresponds to the within distance density
+
+* The red line is the threshold define by the intersection of the two density. The algorithm iterates until the threshold is stabilized.
+
+
+##### PCoA plot
+```{r, pcr-replicate-plot, fig.height=12, fig.width=8, warning=FALSE, eval=T}
+a <- check_pcr_repl(mtbl, funcpcr = check_pcr$replicating,
+               groups = mtbl$samples[mtbl$pcrs$sample_id, "Country"]) + 
+  theme(plot.title = element_text(hjust = 0.5)) +
+  ggtitle(paste0("PCoA before pcr filtering - campaign ", 
+		 as.character(unique(mtbl$samples$Campaign))," - ",
+		 as.character(unique(mtbl$samples$Sample_type))))
+
+mtbl <- subset_metabarlist(mtbl, "pcrs", check_pcr$replicating)
+
+b <- check_pcr_repl(mtbl, 
+               groups = mtbl$samples[mtbl$pcrs$sample_id, "Country"]) + 
+  theme(plot.title = element_text(hjust = 0.5), legend.position = "none") +
+  ggtitle(paste0("PCoA after pcr filtering - campaign",
+		 as.character(unique(mtbl$samples$Campaign))," - ",
+                 as.character(unique(mtbl$samples$Sample_type))))
+
+plot_grid(a, b, nrow = 2)
+
+rm(check_pcr)
+rm(a)
+rm(b)
+```

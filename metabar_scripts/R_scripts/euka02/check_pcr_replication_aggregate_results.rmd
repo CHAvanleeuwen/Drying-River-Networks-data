@@ -1,0 +1,73 @@
+---
+output: 
+  html_fragment:
+    keep_md: true
+    smart: true
+    md_extensions: +autolink_bare_uris+tex_math_single_backslash
+
+params:
+    lib_dir: /bettik/lionnetc/dryver/euka02_merged/run_clean_report
+    rds_path: rds_files/euka02_all_sequencing_clean_1.rds
+
+---
+
+```{r setup, include=FALSE, echo=F}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+
+```{r init-variable, echo=F, message=FALSE, warning=FALSE}
+lib_dir <- params$lib_dir
+rds_file <- file.path(lib_dir, params$rds_path)
+```
+
+```{r, load-data, warning=FALSE, echo=F, message=FALSE}
+mtbl <- readRDS(rds_file)
+```
+
+
+```{r, load-dependencies, echo=F, message=FALSE, warning=FALSE, results='hide'}
+.libPaths( c( .libPaths(), "/bettik/lionnetc/my_r_libraries/") )
+library("metabaR")
+```
+
+
+**Explanation:**
+
+* This plot shows the density distribution of two distances (within and between samples) :
+  + the blue line corresponds to the between distance density
+  + the black line corresponds to the within distance density
+
+* The red line is the threshold define by the intersection of the two density. The algorithm iterates until the threshold is stabilized.
+
+
+```{r, remove-negative-ctl, warning=FALSE, message=FALSE}
+samples_mtbl <- subset_metabarlist(mtbl, "pcrs", 
+                                   mtbl$pcrs$type=="sample" |  
+                                     (mtbl$pcrs$type=="control" & 
+                                        mtbl$pcrs$control_type=="positive"))
+samples_mtbl$samples[unique(samples_mtbl$pcrs[samples_mtbl$pcrs$type=="control", "sample_id"]), c("Country", "Sample_type")] <- "ctl_pos"
+samples_mtbl$samples[unique(samples_mtbl$pcrs[samples_mtbl$pcrs$type=="control", "sample_id"]), "Campaign"] <- 0
+samples_mtbl$motus <- samples_mtbl$motus[,!grepl("obiclean_status", colnames(samples_mtbl$motus))]
+```
+
+
+```{r, merge-result-pcr-replicate, warning=FALSE, message=FALSE}
+check_pcr_list <- list.files(file.path(lib_dir, "rds_files"), pattern = "euka02_check_pcr_")
+check_pcr_all <- do.call(rbind, lapply(check_pcr_list, function(f) {
+  readRDS(file.path(lib_dir, "rds_files", f))
+}))
+check_pcr_all <- check_pcr_all[rownames(samples_mtbl$reads), ]
+```
+
+```{r, remove-non-replicating-pcr, fig.height=8, fig.width=8, warning=F, echo=FALSE}
+mtbl <- subset_metabarlist(mtbl, "pcrs", 
+                           !rownames(mtbl$pcrs) %in% rownames(check_pcr_all)[!check_pcr_all$replicating])
+
+saveRDS(object = mtbl, 
+        file = file.path(lib_dir, "rds_files", "euka02_after_check_pcr_3.rds"))
+```
+
+```{r, remove-gc-pcr-conta, fig.height=8, fig.width=8, warning=FALSE}
+rm(gc_stat)
+```

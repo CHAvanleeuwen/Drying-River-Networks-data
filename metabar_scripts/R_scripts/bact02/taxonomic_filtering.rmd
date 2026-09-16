@@ -1,0 +1,153 @@
+---
+output: 
+  html_fragment:
+    keep_md: true
+    smart: true
+    md_extensions: +autolink_bare_uris+tex_math_single_backslash
+
+params:
+    lib_dir: /bettik/lionnetc/dryver/bact02_merged/run_clean_report
+    rds_path: rds_files/bact02_wo_pcr-ext_conta_6.rds
+    out_file: NULL
+
+---
+
+```{r setup, include=FALSE, echo=F}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+
+```{r init-variable, echo=F, message=FALSE, warning=FALSE}
+lib_dir <- params$lib_dir
+rds_file <- file.path(lib_dir, params$rds_path)
+```
+
+
+```{r, load-dependencies, echo=F, message=FALSE, warning=FALSE, results='hide'}
+.libPaths( c( .libPaths(), "/bettik/lionnetc/my_r_libraries/") )
+library("metabaR")
+library("ggplot2")
+library("cowplot")
+library("DT")
+library("stringr")
+```
+
+```{r, load-data, warning=FALSE, echo=F, message=F}
+mtbl <- readRDS(rds_file)
+```
+
+### Remove human conta
+```{r, human-conta-plot, warning=F, message=F, echo=F, fig.height=8, fig.width=8}
+out <- mtbl
+out$motus[, "taxo_conta"] <- "Other motus"
+out$motus[grepl("Homininae", out$motus$path), "taxo_conta"] <-"Human contamination"
+out <- t(rowsum(t(out$reads), out$motus$taxo_conta))
+
+tmp <- colSums(out)
+data <- data.frame(
+  category=names(tmp),
+  count=as.vector(tmp)
+)
+
+# Compute percentages
+data$fraction <- data$count / sum(data$count)
+
+# Compute the cumulative percentages (top of each rectangle)
+data$ymax <- cumsum(data$fraction)
+
+# Compute the bottom of each rectangle
+data$ymin <- c(0, head(data$ymax, n=-1))
+
+# Compute label position
+data$labelPosition <- (data$ymax + data$ymin) / 2
+
+# Compute a good label
+data$label <- paste0(data$category, "\n reads count: ", data$count, "\n percent: ", round(data$fraction, digits = 2)*100, " %")
+
+# Make the plot
+ggplot(data, aes(ymax=ymax, ymin=ymin, xmax=4, xmin=3, fill=category)) +
+  geom_rect() +
+  geom_label( x=4.25, aes(y=labelPosition, label=label), size=3) +
+  coord_polar(theta="y") +
+  xlim(c(2, 4)) +
+  theme_void() +
+  theme(legend.position = "none")
+
+rm(out)
+rm(tmp)
+rm(data)
+gc_stat <- gc()
+rm(gc_stat)
+```
+
+```{r, remove-human_conta, warning=F, message=F}
+mtbl <- subset_metabarlist(mtbl, "motus", 
+                           !grepl("Homininae", mtbl$motus$path))
+```
+
+### Best identity distribution
+The best identity for ecotag is not the percentage of assignation to a taxon but the best percentage of identity between a MOTU sequence and the reference sequence in the database. The MOTU is discarded if it's best identity score is lower than 0.77 or if it's not assigned to Bacteria 
+```{r, best-identity-taxonomy, fig.height=8, fig.width=8, warning=F, echo=FALSE, results ="asis"}
+to_plot <- data.frame("nb_reads"=colSums(mtbl$reads), 
+                      "best_id"=as.numeric(mtbl$motus$`best_identity:Bact02.DB`))
+
+a <- ggplot(to_plot, aes(x=best_id)) + 
+  geom_histogram(color="grey", fill="white", bins=50) +
+  geom_vline(xintercept = 0.77, col="orange", lty=2) + 
+  labs(x="% similarity against best match", y="# OTUs") +
+  theme_bw() + 
+  theme(panel.grid = element_blank())
+
+b <- ggplot(to_plot, aes(x=best_id, weight=nb_reads)) + 
+  geom_histogram(color="grey", fill="white", bins=50) +
+  geom_vline(xintercept = 0.77, col="orange", lty=2) + 
+  labs(x="% similarity against best match", y="# Reads")+
+    theme_bw() + 
+    theme(panel.grid = element_blank()) 
+
+plot_grid(a, b, nrow = 2)
+
+rm(to_plot)
+rm(a)
+rm(b)
+gc_stat <- gc()
+```
+
+
+```{r, tag-bad-assign-taxo-motus}
+### Tag sequence with bad assignation
+mtbl$motus$bad_taxo_assignment <- !(grepl("Bacteria", mtbl$motus$path) | 
+                                      grepl("Archaea", mtbl$motus$path)) | as.numeric(mtbl$motus[, "best_identity:Bact02.DB"]) < 0.77
+
+```
+
+### Table of bad taxonomic assignement
+```{r, table-of-remove-motus, warning=F, message=F}
+outoftraget <- subset_metabarlist(mtbl, "motus", mtbl$motus$bad_taxo_assignment)
+
+out <- data.frame("scientific_name"=outoftraget$motus$scientific_name,
+                  "rank"= outoftraget$motus$rank,
+                  "best_identity"=outoftraget$motus$`best_identity:Bact02.DB`,
+                  "nb_reads"=colSums(outoftraget$reads)[rownames(outoftraget$motus)],
+                  "nb_occurences"=colSums(outoftraget$reads>0)[rownames(outoftraget$motus)],
+                  "sequence"=outoftraget$motus$sequence)
+
+
+DT::datatable(out[order(out$nb_reads, decreasing = T),],
+              extensions = 'Buttons',
+              options = list(dom = 'Bfrtip',
+                             buttons = c('excel', "csv"),
+                             scrollX='400px'))
+
+rm(out)
+rm(outoftraget)
+```
+
+```{r, save-mtbl, warning=FALSE}
+# mtbl <- subset_metabarlist(mtbl, "motus", !mtbl$motus$bad_taxo_assignment)
+saveRDS(object = mtbl, file = file.path(lib_dir, "rds_files", "bact02_clean_7.rds"))
+```
+
+```{r, remove-gc-pcr-conta, fig.height=8, fig.width=8, warning=FALSE}
+rm(gc_stat)
+```

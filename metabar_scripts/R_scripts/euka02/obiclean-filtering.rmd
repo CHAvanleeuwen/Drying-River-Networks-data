@@ -1,0 +1,325 @@
+---
+output: 
+  html_fragment:
+    keep_md: true
+    smart: true
+    md_extensions: +autolink_bare_uris+tex_math_single_backslash
+
+params:
+    lib_dir: /bettik/lionnetc/dryver/euka02_merged/run_clean_report
+    rds_path: rds_files/euka02_after_check_pcr_3.rds
+---
+
+```{r setup, include=FALSE, echo=F}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+
+```{r init-variable, echo=F, message=FALSE, warning=FALSE}
+lib_dir <- params$lib_dir
+rds_file <- file.path(lib_dir, params$rds_path)
+
+rev_tag <- "acacacac,acagcaca,gtgtacat,tatgtcag,tagtcgca,tactatac,actagatc,gatcgcga,cgctctcg,gtcgtaga,gtcacgtc,gactgatg,agactatg,gcgtcagc,tgacatca,acatgtgt,gtacgact,atgatcgc,acgacgag,catcagtc,atcagtca,tctactga,gatgatct,ctgcgtac,agcgacta,tcagtgtc,actctgct,atatagcg,ctatgcta,tcgcgctg,agcacagt,tagctagt,agtgctac,cgtataca,cgagtcgt,cacatgat"
+
+fwd_tag <- "acacacac,acagcaca,gtgtacat,tatgtcag,tagtcgca,tactatac,actagatc,gatcgcga,cgctctcg,gtcgtaga,gtcacgtc,gactgatg,agactatg,gcgtcagc,tgacatca,acatgtgt,gtacgact,atgatcgc,acgacgag,catcagtc,atcagtca,tctactga,gatgatct,ctgcgtac,agcgacta,tcagtgtc,actctgct,atatagcg,ctatgcta,tcgcgctg,agcacagt,tagctagt"
+
+tag_list <- union(unlist(strsplit(fwd_tag, ",")), 
+                  unlist(strsplit(rev_tag, ",")))
+```
+
+
+```{r, load-dependencies, echo=F, message=FALSE, warning=FALSE, results='hide'}
+.libPaths( c( .libPaths(), "/bettik/lionnetc/my_r_libraries/") )
+library("metabaR")
+library("ggplot2")
+library("cowplot")
+library("ggrepel")
+library("gridExtra")
+library("ade4")
+library("RColorBrewer")
+library("DT")
+library("stringr")
+library("vegan")
+library("ape")
+library("reshape2")
+```
+
+```{r, function, echo=F}
+update_obiclean_status <- function(metabarlist){
+  motus_id <- rownames(metabarlist$motus)
+  
+  filter_mat <- metabarlist$reads>0
+  rownames(filter_mat) <- paste("obiclean_status", rownames(filter_mat), sep=":")
+  filter_mat <- t(filter_mat)
+  
+  obiclean_mat <- metabarlist$motus[, grepl("obiclean_status", colnames(metabarlist$motus))]
+  obiclean_mat <- do.call(cbind, lapply(colnames(obiclean_mat), function(colname){
+    tmp <- obiclean_mat[, colname, drop=F]
+    if(colname %in% colnames(filter_mat)){
+      tmp[filter_mat[motus_id, colname]==FALSE, ] <- NA 
+    }else{
+      tmp[,] <- NA
+    }
+    tmp
+  }))
+  
+  if(all(rownames(obiclean_mat) == rownames(metabarlist$motus))){
+    metabarlist$motus[, colnames(obiclean_mat)] <- obiclean_mat
+  }else{
+    metabarlist$motus[, colnames(obiclean_mat)] <- obiclean_mat[rownames(metabarlist$motus), ]
+  }
+  metabarlist
+}
+
+identify_disfunctional_PCR <- function(metabarlist, sample_categories=NA, threshold=NA, title="Identify dysfunctionnal pcr", filtering=TRUE){
+  to_plot <- data.frame(reads=rowSums(metabarlist$reads), 
+                        motus=rowSums(metabarlist$reads>0),
+                        type=metabarlist$pcrs[,"type"],
+                        stringsAsFactors = F)
+  to_plot[to_plot$type=="control", "type"] <- metabarlist$pcrs[to_plot$type=="control", "control_type"]
+
+  if(!is.na(sample_categories)){
+          to_plot$categories <- metabarlist$samples[metabarlist$pcrs$sample_id, sample_categories]
+          to_plot[is.na(to_plot$categories),"categories"] <- "no_information"
+  }
+  to_plot <- to_plot[to_plot$reads>0,]
+  g1 <- ggplot(to_plot, aes(x=reads,y=motus, color=type, 
+                            ifelse(is.na(sample_categories), NULL, shape=categories))) + 
+  geom_point() + scale_x_log10(name="# reads (log10)") + scale_y_log10(name="# motus (log10)") +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  ggtitle(title)
+  
+  if(!is.na(threshold)){
+          g1 <- g1 + geom_vline(xintercept = threshold, color = "red", size=0.5)
+  }
+  print(g1)
+  if(filtering){
+          return(rownames(to_plot[to_plot$reads<threshold,]))
+  }
+}
+```
+
+
+```{r, load-data, warning=FALSE, echo=F, message=F}
+mtbl <- readRDS(rds_file)
+```
+
+```{r, update-obiclean-status, warning=FALSE, message=F}
+mtbl <- update_obiclean_status(mtbl)
+saveRDS(object = mtbl, file = file.path(lib_dir, "rds_files", "euka02_obiclean_clean_4.rds"))
+```
+
+### Remove the internal motus {.tabset}
+This step set the internal motus count to 0.
+```{r, build-internal-matrix, warning=F, echo=FALSE, message=F}
+column <- colnames(mtbl$motus)[!grepl("obiclean_status", colnames(mtbl$motus)) | 
+                                 gsub("obiclean_status:", "", colnames(mtbl$motus)) %in% rownames(mtbl$reads)]
+mtbl$motus <- mtbl$motus[, column]
+
+filter_mat <- mtbl$motus[, grepl("obiclean_status", colnames(mtbl$motus))]
+colnames(filter_mat) <- gsub("obiclean_status:", "", colnames(filter_mat))
+filter_mat[rownames(mtbl$reads)[!rownames(mtbl$reads) %in% colnames(filter_mat)]] <- NA
+filter_mat <- filter_mat[, rownames(mtbl$reads)]
+
+filter_mat <- !is.na(filter_mat) & (filter_mat=="s" | filter_mat=="h")
+filter_mat <- t(filter_mat)
+```
+
+#### Check matrix conformity
+```{r, check-singleton-matrix-dimension, warning=F, message=F}
+out <- t(data.frame(
+  "Check pcr conformity" = all(rownames(filter_mat) == rownames(mtbl$reads)),
+  "Check motus conformity" = all(colnames(filter_mat) == colnames(mtbl$reads)),
+  "check type of matrix" = is.logical(filter_mat), check.names = F))
+
+DT::datatable(out,
+              extensions = 'Buttons', 
+              colnames = rep("", ncol(out)),
+              options = list(dom = 'rt', 
+                             scrollX='400px')) %>% 
+                             formatStyle(1, 
+                                         target = 'row', 
+                                         backgroundColor = styleEqual(c(1, 0), c(NA, 'red')))
+
+rm(out)
+```
+
+```{r, save-singleton-matrix}
+saveRDS(object = filter_mat, file = file.path(lib_dir, "rds_files", "obiclean_filter_mat_euka02_4.rds"))
+```
+
+#### Bad motus {.tabset}
+```{r, pcr-template-internal-rm, fig.height=8, fig.width=8, warning=FALSE, message=FALSE, results='asis', echo=F}
+internalRM <- mtbl
+internalRM$reads[filter_mat] <- 0
+
+for(lib in unique(internalRM$pcrs$library)){
+    mtb_lib <- subset_metabarlist(internalRM, "pcrs", internalRM$pcrs$library==lib)
+    cat(paste0("##### ",lib,"\n"))
+    print(ggpcrtag(mtb_lib, taglist = as.character(tag_list), legend_title = "Reads count") + 
+            ggtitle(paste0("PCR template of internal motus removed for library ", lib, 
+                          " - Euka02")) + 
+            theme(plot.title = element_text(hjust = 0.5)))
+    cat("\n\n")
+    rm(mtb_lib)
+    gc_stat <- gc()
+}
+
+rm(internalRM)
+gc_stat <- gc()
+```
+
+```{r, apply-singleton-matrix, warning=F, message=F}
+#### Apply matrix
+obi_res <- mtbl$reads
+obi_res[!filter_mat] <- 0
+mtbl <- subset_metabarlist(mtbl, "motus", colSums(obi_res)>0)
+mtbl$reads <- obi_res[,colSums(obi_res)>0]
+
+saveRDS(object = mtbl, file = file.path(lib_dir, "rds_files", "euka02_internal_remove_4.rds"))
+
+rm(obi_res)
+rm(filter_mat)
+gc_stat <- gc()
+```
+
+#### PCR template after internal motus filtering {.tabset}
+```{r, pcr-template-wo-internal, fig.height=8, fig.width=8, warning=FALSE, message=FALSE, results='asis', echo=F}
+for(lib in unique(mtbl$pcrs$library)){
+    mtb_lib <- subset_metabarlist(mtbl, "pcrs", mtbl$pcrs$library==lib)
+    cat(paste0("##### ",lib,"\n"))
+    print(ggpcrtag(mtb_lib, taglist = as.character(tag_list), legend_title = "Reads count") + 
+            ggtitle(paste0("PCR template without internal motus for library ", lib, 
+                          " - Euka02")) + 
+            theme(plot.title = element_text(hjust = 0.5)))
+    cat("\n\n")
+    rm(mtb_lib)
+    gc_stat <- gc()
+}
+```
+
+### Remove unreplicated motus {.tabset}
+This step set to 0 the motus which are not tagged head or singleton in at least 2 pcr replicates for each sample or control.
+```{r, update-obiclean-status-unrep-motus, warning=FALSE}
+mtbl <- update_obiclean_status(mtbl)
+```
+
+```{r, build-unreplicated-motus-matrix, warning=F, echo=FALSE}
+#### Build matrix to remove unreplicating motus
+
+column <- colnames(mtbl$motus)[!grepl("obiclean_status", colnames(mtbl$motus)) | 
+                                 gsub("obiclean_status:", "", colnames(mtbl$motus)) %in% rownames(mtbl$reads)]
+mtbl$motus <- mtbl$motus[, column]
+
+post_filter_mat <- mtbl$motus[, grepl("obiclean_status", colnames(mtbl$motus))]
+colnames(post_filter_mat) <- gsub("obiclean_status:", "", colnames(post_filter_mat))
+post_filter_mat[rownames(mtbl$reads)[!rownames(mtbl$reads) %in% colnames(post_filter_mat)]] <- NA
+post_filter_mat <- post_filter_mat[, rownames(mtbl$reads)]
+
+filterColname <- colnames(post_filter_mat)
+post_filter_mat <- !is.na(post_filter_mat) & (post_filter_mat=="s" | post_filter_mat=="h")
+for(sample_id in unique(mtbl$pcrs[mtbl$pcrs$type=="sample", "sample_id"])){
+    replicates_ind <- grepl(paste0(sample_id, "_"), filterColname, fixed = TRUE)
+    post_filter_mat[, replicates_ind] <- rowSums(post_filter_mat[, replicates_ind]) > 1
+}
+
+for(sample_id in unique(mtbl$pcrs[mtbl$pcrs$type=="control" & mtbl$pcrs$control_type!="sequencing", "sample_id"])){
+    replicates_ind <- grepl(paste0(sample_id, "_"), filterColname, fixed = TRUE)
+    post_filter_mat[, replicates_ind] <- rowSums(post_filter_mat[, replicates_ind])>1
+}
+post_filter_mat <- t(post_filter_mat)
+
+gc_stat <- gc()
+```
+
+#### Check matrix conformity
+```{r, check-unreplicated-matrix-dimension, warning=F, message=F}
+out <- t(data.frame(
+  "Check pcr conformity" = all(rownames(post_filter_mat) == rownames(mtbl$reads)),
+  "Check motus conformity" = all(colnames(post_filter_mat) == colnames(mtbl$reads)),
+  "check type of matrix" = is.logical(post_filter_mat), check.names = F))
+
+DT::datatable(out,
+              extensions = 'Buttons', 
+              colnames = rep("", ncol(out)),
+              options = list(dom = 'rt', 
+                             scrollX='400px')) %>% 
+                             formatStyle(1, 
+                                         target = 'row', 
+                                         backgroundColor = styleEqual(c(1, 0), c(NA, 'red')))
+
+rm(out)
+```
+
+#### Bad motus {.tabset}
+```{r, pcr-template-unreplicated-rm, fig.height=8, fig.width=8, warning=FALSE, message=FALSE, results='asis', echo=F}
+unRepMotus <- mtbl
+unRepMotus$reads[post_filter_mat] <- 0
+
+for(lib in unique(unRepMotus$pcrs$library)){
+    mtb_lib <- subset_metabarlist(unRepMotus, "pcrs", unRepMotus$pcrs$library==lib)
+    cat(paste0("##### ",lib,"\n"))
+    print(ggpcrtag(mtb_lib, taglist = as.character(tag_list), legend_title = "Reads count") + 
+            ggtitle(paste0("PCR template of unreplicated motus removed for library ", lib, 
+                          " - Euka02")) + 
+            theme(plot.title = element_text(hjust = 0.5)))
+    cat("\n\n")
+    rm(mtb_lib)
+    gc_stat <- gc()
+}
+
+rm(unRepMotus)
+gc_stat <- gc()
+```
+
+```{r, save-unreplicating-matrix}
+saveRDS(object = post_filter_mat, file = file.path(lib_dir, "rds_files", "obiclean_post_filter_mat_euka02_5.rds"))
+```
+
+
+```{r, apply-unreplicating-matrix, warning=F, message=F}
+#### Apply matrix
+obi_res <- mtbl$reads
+obi_res[!post_filter_mat] <- 0
+mtbl <- subset_metabarlist(mtbl, "motus", colSums(obi_res)>0)
+mtbl$reads <- obi_res[,colSums(obi_res)>0]
+
+saveRDS(object = mtbl, file = file.path(lib_dir, "rds_files", "euka02_no_rep_motus_remove_5.rds"))
+
+rm(obi_res)
+rm(post_filter_mat)
+gc_stat <- gc()
+```
+
+#### PCR template after unreplicated motus filtering {.tabset}
+```{r, pcr-template-wo-unreplicated, fig.height=8, fig.width=8, warning=FALSE, message=FALSE, results='asis', echo=F}
+for(lib in unique(mtbl$pcrs$library)){
+    mtb_lib <- subset_metabarlist(mtbl, "pcrs", mtbl$pcrs$library==lib)
+    cat(paste0("##### ",lib,"\n"))
+    print(ggpcrtag(mtb_lib, taglist = as.character(tag_list), legend_title = "Reads count") + 
+            ggtitle(paste0("PCR template without unreplicated motus for library ", lib, 
+                          " - Euka02")) + 
+            theme(plot.title = element_text(hjust = 0.5)))
+    cat("\n\n")
+    rm(mtb_lib)
+    gc_stat <- gc()
+}
+```
+
+```{r, remove-disfunctional-pcr, warning=F}
+sample_to_remove <- identify_disfunctional_PCR(mtbl, threshold = 100)
+
+if(length(sample_to_remove)>0){
+  mtbl <- subset_metabarlist(mtbl, "reads",
+                                !rownames(mtbl$reads) %in% sample_to_remove)
+}
+saveRDS(object = mtbl, file = file.path(lib_dir, "rds_files", "euka02_wo_no_rep_pcr_5.rds"))
+
+rm(sample_to_remove)
+gc_stat <- gc()
+```
+
+
+```{r, remove-gc-pcr-conta, fig.height=8, fig.width=8, warning=FALSE}
+rm(gc_stat)
+```

@@ -1,0 +1,152 @@
+---
+title: "DRYVER - Euka02"
+author: "Lionnet Clément"
+date: "2023-05-03"
+output: 
+  html_fragment:
+    keep_md: true
+    smart: true
+    md_extensions: +autolink_bare_uris+tex_math_single_backslash
+params:
+    lib_dir: /bettik/lionnetc/dryver/bact02_merged/run_clean_report
+    obifile: input_data/bact02.filtered.uniq.clean.tab
+    ngsfilter: input_data/bact02_merged.ngsfilter
+    sample_metadata: input_data/samples_metadata_update.tsv
+    rds_path: rds_files/bact02_all_0.rds
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, eval=T)
+```
+
+```{r init-variable, echo=F, message=FALSE, warning=FALSE}
+lib_dir <- params$lib_dir
+rds_file <- file.path(lib_dir, params$rds_path)
+obifile <- file.path(lib_dir, params$obifile)
+ngsfilter <- file.path(lib_dir, params$ngsfilter)
+sample_metadata <- file.path(lib_dir, params$sample_metadata)
+```
+
+```{r, load-dependencies, warning=F, message=F, echo=F}
+# Load dependencies
+.libPaths(c( .libPaths(), "/bettik/lionnetc/my_r_libraries/"))
+library("metabaR")
+```
+
+```{r, create-metabarlist-rds, message=FALSE, warning=FALSE, echo=F}
+# Load data
+mtbl <- obifiles_to_metabarlist(
+  file_obitab = obifile,
+  file_ngsfilter = ngsfilter,
+  file_samples = sample_metadata,
+  sep = "\t")
+
+mtbl$pcrs$dna_plate <- gsub("_Bact02_P.*", "", gsub(".*DNA_plate_", "", 
+                                                    mtbl$pcrs$experiment))
+
+saveRDS(mtbl, file = rds_file)
+```
+
+```{r, create-metabarlist-rds-euka02, message=FALSE, warning=FALSE, echo=F, eval=F}
+# Load data
+mtbl <- obifiles_to_metabarlist(
+  file_obitab = obifile,
+  file_ngsfilter = ngsfilter,
+  file_samples = sample_metadata,
+  sep = "\t")
+
+rownames(mtbl$reads)[grepl("DNA_plate_12", 
+                           mtbl$pcrs$experiment)] <- rownames(mtbl$pcrs)[grepl("DNA_plate_11", 
+                                                                               mtbl$pcrs$experiment)]
+rownames(mtbl$reads)[grepl("DNA_plate_11", 
+                           mtbl$pcrs$experiment)] <- rownames(mtbl$pcrs)[grepl("DNA_plate_12", 
+                                                                               mtbl$pcrs$experiment)]
+mtbl$reads <- mtbl$reads[rownames(mtbl$pcrs),]
+
+mtbl$pcrs$dna_plate <- gsub("_Bact02_P.*", "", gsub(".*DNA_plate_", "", 
+                                                    mtbl$pcrs$experiment))
+
+ctl_type <- mtbl$pcrs$control_type
+ctl_type[is.na(ctl_type)] <- "sample"
+
+to_modify <- mtbl$pcrs$dna_plate==12 & 
+  ctl_type[mtbl$pcrs$dna_plate==12] == "sequencing" & 
+  ctl_type[mtbl$pcrs$dna_plate==11] != "sequencing"
+
+mtbl$pcrs[to_modify, "control_type"] <- "pcr"
+mtbl$pcrs[to_modify, "type"] <- "control"
+mtbl$pcrs[to_modify, "sample_id"] <- gsub("blank", "PCRNeg_error", mtbl$pcrs[to_modify, "sample_id"])
+rownames(mtbl$pcrs)[to_modify] <- gsub("blank", "PCRNeg_error", rownames(mtbl$pcrs)[to_modify])
+
+obi_to_rm <- colnames(mtbl$motus) %in% paste0("obiclean_status:", rownames(mtbl$reads)[to_modify])
+colnames(mtbl$motus)[obi_to_rm] <- rownames(mtbl$pcrs)[to_modify]
+rm(obi_to_rm)
+
+rownames(mtbl$reads)[to_modify] <- rownames(mtbl$pcrs)[to_modify]
+
+
+to_modify <- mtbl$pcrs$dna_plate==11 & 
+  ctl_type[mtbl$pcrs$dna_plate==11] == "sequencing" & 
+  ctl_type[mtbl$pcrs$dna_plate==12] != "sequencing"
+
+mtbl$pcrs[to_modify, "control_type"] <- "pcr"
+mtbl$pcrs[to_modify, "type"] <- "control"
+mtbl$pcrs[to_modify, "sample_id"] <- gsub("blank", "PCRNeg_error", 
+                                          mtbl$pcrs[to_modify, "sample_id"])
+rownames(mtbl$pcrs)[to_modify] <- gsub("blank", "PCRNeg_error", 
+                                       rownames(mtbl$pcrs)[to_modify])
+
+obi_to_rm <- colnames(mtbl$motus) %in% paste0("obiclean_status:", rownames(mtbl$reads)[to_modify])
+colnames(mtbl$motus)[obi_to_rm] <- rownames(mtbl$pcrs)[to_modify]
+rm(obi_to_rm)
+
+rownames(mtbl$reads)[to_modify] <- rownames(mtbl$pcrs)[to_modify]
+
+
+to_modify <- mtbl$pcrs$dna_plate==11 & 
+  ctl_type[mtbl$pcrs$dna_plate==12] == "sequencing" & 
+  ctl_type[mtbl$pcrs$dna_plate==11] != "sequencing"
+
+mtbl$pcrs[to_modify, "control_type"] <- "sequencing"
+mtbl$pcrs[to_modify, "type"] <- "control"
+mtbl$pcrs[to_modify, "sample_id"] <- paste0("blank_error_", 
+                                            c(1:length(mtbl$pcrs[to_modify, "sample_id"])), 
+                                            "_DP", mtbl$pcrs[to_modify, "dna_plate"],
+                                            gsub(".*_R", "_R", rownames(mtbl$pcrs)[to_modify]))
+rownames(mtbl$pcrs)[to_modify] <- paste0("blank_error_", 
+                                         c(1:length(mtbl$pcrs[to_modify, "sample_id"])), 
+                                         "_DP", mtbl$pcrs[to_modify, "dna_plate"],
+                                         gsub(".*_R", "_R", rownames(mtbl$pcrs)[to_modify]))
+
+obi_to_rm <- colnames(mtbl$motus) %in% paste0("obiclean_status:", rownames(mtbl$reads)[to_modify])
+colnames(mtbl$motus)[obi_to_rm] <- rownames(mtbl$pcrs)[to_modify]
+rm(obi_to_rm)
+
+rownames(mtbl$reads)[to_modify] <- rownames(mtbl$pcrs)[to_modify]
+
+
+to_modify <- mtbl$pcrs$dna_plate==12 & 
+  ctl_type[mtbl$pcrs$dna_plate==11] == "sequencing" & 
+  ctl_type[mtbl$pcrs$dna_plate==12] != "sequencing"
+
+mtbl$pcrs[to_modify, "control_type"] <- "sequencing"
+mtbl$pcrs[to_modify, "type"] <- "control"
+mtbl$pcrs[to_modify, "sample_id"] <- paste0("blank_error_", 
+                                            c(1:length(mtbl$pcrs[to_modify, "sample_id"])), 
+                                            "_DP", mtbl$pcrs[to_modify, "dna_plate"],
+                                            gsub(".*_R", "_R", rownames(mtbl$pcrs)[to_modify]))
+rownames(mtbl$pcrs)[to_modify] <- paste0("blank_error_", 
+                                         c(1:length(mtbl$pcrs[to_modify, "sample_id"])), 
+                                         "_DP", mtbl$pcrs[to_modify, "dna_plate"],
+                                         gsub(".*_R", "_R", rownames(mtbl$pcrs)[to_modify]))
+
+obi_to_rm <- colnames(mtbl$motus) %in% paste0("obiclean_status:", rownames(mtbl$reads)[to_modify])
+colnames(mtbl$motus)[obi_to_rm] <- rownames(mtbl$pcrs)[to_modify]
+rm(obi_to_rm)
+
+rownames(mtbl$reads)[to_modify] <- rownames(mtbl$pcrs)[to_modify]
+
+saveRDS(mtbl, file = rds_file)
+```

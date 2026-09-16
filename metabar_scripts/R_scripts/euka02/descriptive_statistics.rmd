@@ -1,0 +1,225 @@
+---
+output: 
+  html_fragment:
+    keep_md: true
+    smart: true
+    md_extensions: +autolink_bare_uris+tex_math_single_backslash
+params:
+    # lib_dir: /home/lionnetc/travail/document/DRYVER/euka02
+    # sample_metadata: ../sample_metadata/samples_metadata_update.tsv
+    lib_dir: /bettik/lionnetc/dryver/euka02_merged/run_clean_report
+    sample_metadata: input_data/samples_metadata_update.tsv
+    rds_path: rds_files/euka02_clean_clustered_8.rds
+    ngsfilter: input_data/euka02_merged.corrected2.ngsfilter
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE, echo=F}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+
+```{r init-variable, echo=F, message=FALSE, warning=FALSE}
+lib_dir <- params$lib_dir
+rds_file <- file.path(lib_dir, params$rds_path)
+```
+
+
+```{r, load-dependencies, echo=F, message=FALSE, warning=FALSE, results='hide'}
+.libPaths( c( .libPaths(), "/bettik/lionnetc/my_r_libraries/") )
+library("metabaR")
+library("ggplot2")
+library("cowplot")
+library("DT")
+library("stringr")
+library("vegan")
+```
+
+```{r, function, echo=F, warning=F, message=F}
+## Function
+## Descriptive stat
+statTable <- function(ngsfilter, metabarlist){
+  sample_metabarlist <- subset_metabarlist(metabarlist, "pcrs", metabarlist$pcrs$type=="sample")
+  sample_metabarlist <- subset_metabarlist(sample_metabarlist, "motus", colSums(sample_metabarlist$reads)>0)
+  replicates <- rownames(ngsfilter[ngsfilter$type=="sample",])
+  samples <- unique(as.character(ngsfilter[ngsfilter$type=="sample", "sample_id"]))
+  
+  data.frame("stat"=c("# total of replicates", "# kept replicates",
+                      "# total of samples", "# kept sample",
+                      "# sample with 3 replicates", "# sample with 2 replicates", 
+                      "# remove sample", "# taxa", "# motus", "# clustered motus",
+                      "min # of reads", "mean # reads", "max # reads"),
+             "value"=c(length(replicates),
+                       length(replicates[replicates %in% rownames(sample_metabarlist$reads)]),
+                       length(samples),
+                       length(samples[samples %in% rownames(sample_metabarlist$samples)]),
+                       sum(table(sample_metabarlist$pcrs$sample_id)==3),
+                       sum(table(sample_metabarlist$pcrs$sample_id)==2),
+                       length(samples[!samples %in% rownames(sample_metabarlist$samples)]),
+                       length(unique(sample_metabarlist$motus$scientific_name)),
+                       length(rownames(sample_metabarlist$motus)),
+                       length(unique(sample_metabarlist$motus$cluster)),
+                       min(rowSums(sample_metabarlist$reads)),
+                       round(mean(rowSums(sample_metabarlist$reads))),
+                       max(rowSums(sample_metabarlist$reads)))
+             )
+}
+
+## Visualize the result of filtering on sample replication
+ggReplicatStat <- function(ngsfilter, samples_metabarlist){
+  good_sample <- table(samples_metabarlist$pcrs[samples_metabarlist$pcrs$type=="sample", "sample_id"])
+  
+  remove_rep <-
+    rownames(ngsfilter[ngsfilter$type == "sample", ])[!rownames(ngsfilter[ngsfilter$type == "sample", ]) %in% 
+                                                        rownames(samples_metabarlist$pcrs)]
+  
+  bad_sample <- table(ngsfilter[remove_rep, "sample_id"])
+  to_plot <- data.frame("sample"=names(c(good_sample, bad_sample)), 
+                        "value"=as.vector(c(good_sample, bad_sample)),
+                        "status"=c(rep("kept",
+                                       length(good_sample)),
+                                   rep("removed", 
+                                       length(bad_sample))), stringsAsFactors = F)
+  to_plot$status <- factor(to_plot$status, levels=c("removed", "kept"))
+  
+  ggplot(to_plot,
+         aes(x=sample, y=value, fill=status, order=sample)) +
+    geom_bar(stat="identity") +
+    scale_fill_brewer(palette="Dark2", direction=-1) +
+    scale_x_discrete(name="Samples", limits = rev(levels(to_plot$sample)),
+                     expand = c(0,0)) +
+    scale_y_continuous(expand = c(0,0), limits = c(0, 3)) +
+    ylab("number of replicate") +
+    theme(axis.text.y = element_text(size=6),
+          plot.title = element_text(hjust = 0.5),
+          panel.grid = element_blank(),
+          panel.border = element_blank()) +
+    coord_flip()
+}
+```
+
+```{r load-initial-data, warning=FALSE, message=F}
+mtbl <- readRDS(rds_file)
+samples_mtd <- read.csv2(file.path(lib_dir, params$sample_metadata), 
+                     row.names = 1, header = T, check.names = F, stringsAsFactors = F, sep="\t")
+ngs <- read_ngsfilter(file.path(lib_dir, params$ngsfilter), sep="\t")
+rownames(ngs) <- ngs$pcr_id
+```
+
+## Summary table {.tabset}
+```{r, descriptive-stat-table, warning=F, results='asis'}
+for(country in sort(unique(mtbl$samples$Country))){
+  sub_mat <- subset_metabarlist(mtbl, "samples", mtbl$samples$Country==country)
+  cat(paste0("### ", country, "\n"))
+  tab <- statTable(
+    ngs[ngs$sample_id %in% rownames(samples_mtd[samples_mtd$Country==country,]),], 
+    sub_mat)
+  print(htmltools::tagList(DT::datatable(tab, extensions = 'Buttons', 
+                rownames = FALSE,
+                options = list(dom = 'Bfrtip', 
+                               buttons = c('excel', "csv"),
+                               scrollX='400px')
+              )))
+  cat("\n\n")
+  rm(country)
+}
+```
+
+## Sample tables statistics
+```{r, samples-stat-table, warning=F, results='asis', echo=F}
+samples_rep <- subset_metabarlist(mtbl, "pcrs", mtbl$pcrs$type=="sample")
+samples <- aggregate_pcrs(samples_rep)
+stat <- data.frame("reads_count"=rowSums(samples$reads),
+                   "motus_count"=rowSums(samples$reads>0),
+                   "replicate_count"=as.vector(table(samples_rep$pcrs$sample_id)[rownames(samples$reads)]))
+
+tab <- samples_mtd[, c("Country", "Campaign", "Sample_type", "Site_code", "DRN", 
+                       "Sampling_date", "Flow_regimen", "Habitat")]
+
+stat[rownames(tab)[!rownames(tab) %in% rownames(samples$samples)],] <- 0
+
+tab <- cbind("status"=ifelse(!rownames(tab) %in% rownames(samples$samples), "remove", "keep"), tab)
+
+tab <- cbind("sample_names"=rownames(tab), stat[rownames(tab),], tab)
+
+DT::datatable(tab, extensions = 'Buttons', 
+              rownames = FALSE,
+              options = list(dom = 'Bfrtip', 
+                             buttons = c('excel', "csv"),
+                             scrollX='400px') 
+              ) %>%
+  formatStyle(
+    'replicate_count',
+    background = styleColorBar(tab$replicate_count, 'lightgreen'),
+    backgroundSize = '95% 90%',
+    backgroundRepeat = 'no-repeat',
+    backgroundPosition = 'center'
+  ) %>%
+  formatStyle(
+    'status',
+    target = 'row',
+    backgroundColor = styleEqual(c('keep', 'remove'), c(NA, "orange"))
+  )
+
+rm(tab)
+rm(stat)
+rm(samples)
+rm(samples_rep)
+```
+
+
+## Reproducibility plot {.tabset}
+```{r fig.height=30, fig.width=10, descriptive-stat-plot, warning=FALSE, results='asis'}
+for(country in sort(unique(mtbl$samples$Country))){
+  sub_mat <- subset_metabarlist(mtbl, "samples", mtbl$samples$Country==country)
+  cat(paste0("### ", country, "\n"))
+  print(
+    ggReplicatStat(
+      ngs[ngs$sample_id %in% rownames(samples_mtd[samples_mtd$Country==country,]),], 
+      sub_mat) +
+      ggtitle(paste0("Distribution of replicate for each sample after quality filter for ", country)))
+  cat("\n\n")
+  rm(country)
+}
+```
+
+## Cumulated read number per sample {.tabset}
+```{r, aggregate-pcr, warning=F}
+sample_rep <- subset_metabarlist(mtbl, "pcrs", mtbl$pcrs$type=="sample")
+samples <- aggregate_pcrs(sample_rep, FUN = FUN_agg_pcrs_sum)
+
+rm(sample_rep)
+rm(mtbl)
+gc_stat <- gc()
+```
+
+
+```{r, sample-abundance, fig.height=30, fig.width=10, warning=FALSE, results='asis'}
+to_plot <- data.frame(sample_name=names(rowSums(samples$reads)),
+                      value=rowSums(samples$reads),
+                      Country=as.character(samples$samples[rownames(samples$reads), "Country"]),
+                      Campaign=as.character(samples$samples[rownames(samples$reads), "Campaign"]),
+                      Sample_type=as.character(samples$samples[rownames(samples$reads), "Sample_type"]),
+                      stringsAsFactors = F)
+
+# to_plot$sample_name <- samples$samples[to_plot$sample_name, "sample_name"]
+
+for(country in sort(unique(as.character(samples$samples$Country)))){
+  sub_plot <- to_plot[to_plot$Country==country,]
+  cat(paste0("### ", country, "\n"))
+  print(ggplot(sub_plot[sub_plot$value>0,], aes(x=reorder(sample_name, -as.numeric(Campaign)), y=value, fill=Sample_type)) + 
+    geom_bar(stat = "identity", position = "stack") +
+    scale_y_continuous(expand = c(0,0)) +
+    theme_classic() +
+    coord_flip() +
+    theme(axis.text.y=element_text(size=6), 
+          plot.title = element_text(hjust = 0.5)) +
+    xlab("samples") +
+    ggtitle(paste0("Sample abundance - Dryver - Euka02 - ", country)))
+  cat("\n\n")
+  rm(sub_plot)
+}
+  
+rm(to_plot)
+```

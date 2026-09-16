@@ -1,0 +1,65 @@
+---
+output: 
+  html_fragment:
+    keep_md: true
+    smart: true
+    md_extensions: +autolink_bare_uris+tex_math_single_backslash
+params:
+    lib_dir: /bettik/lionnetc/dryver/bact02_merged/run_clean_report
+    rds_path: rds_files/bact02_clean_clustered_8.rds
+    clust_rds_path: rds_files/bact02_clean_motus_9.rds
+    silva_dir_path: results_silva/ssu
+    silva_taxo: results_silva/tax_slv_ssu_138.1.txt
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE, echo=F}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+```{r, load-dependencies, echo=F, message=FALSE, warning=FALSE, results='hide'}
+.libPaths( c( .libPaths(), "/bettik/lionnetc/my_r_libraries/") )
+library("metabaR")
+library("stringr")
+library("vegan")
+```
+
+
+```{r init-variable, message=FALSE, warning=FALSE}
+lib_dir <- params$lib_dir
+rds_file <- file.path(lib_dir, params$rds_path)
+clust_rds_file <- file.path(lib_dir, params$clust_rds_path)
+```
+
+
+```{r, add-silva-annotation, warning=F, message=F}
+## add silva annotation
+mtbl <- readRDS(rds_file)
+
+mtbl <- silva_annotator(mtbl,
+                        file.path(lib_dir, params$silva_dir_path, "exports/bact02_dryver---ssu---otus.csv"), 
+                        file.path(lib_dir, params$silva_dir_path, "stats/sequence_cluster_map/data/bact02_dryver---ssu---sequence_cluster_map---fasta_to_silva_bact02_dryver.clstr"),
+                        file.path(lib_dir, params$silva_taxo))
+
+mtbl$motus$scientific_name_Silva <- unlist(lapply(as.character(mtbl$motus$lineage_silva), function(x) { 
+  v <- unlist(strsplit(x, ";"))
+  taxname <- tail(v, n=1)
+  if(taxname == "uncultured"){
+    taxname <- paste(tail(v, n=2), collapse = "_")
+  }
+  return(taxname)
+} ))
+
+silva_mtd <- read.csv2(file.path(lib_dir, params$silva_taxo), 
+                       header = F, sep = "\t", 
+                       row.names = 1, stringsAsFactors = FALSE)
+
+mtbl$motus$rank_Silva <- silva_mtd[mtbl$motus$lineage_silva, "V3"]
+
+saveRDS(mtbl, file.path(lib_dir, "rds_files", "bact02_clean_clustered_8.rds"))
+
+clust_mtbl <- readRDS(file.path(lib_dir, "rds_files", "bact02_clean_motus_9.rds"))
+clust_mtbl$motus <- mtbl$motus[rownames(clust_mtbl$motus), ]
+saveRDS(clust_mtbl, file.path(lib_dir, "rds_files", "bact02_clean_motus_9.rds"))
+```

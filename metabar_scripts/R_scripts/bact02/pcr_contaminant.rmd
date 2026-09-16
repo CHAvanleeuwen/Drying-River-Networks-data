@@ -1,0 +1,170 @@
+---
+output: 
+  html_fragment:
+    keep_md: true
+    smart: true
+    md_extensions: +autolink_bare_uris+tex_math_single_backslash
+
+params:
+    lib_dir: /bettik/lionnetc/dryver/bact02_merged
+    rds_path: rds_files/bact02_after_check_pcr_3.rds
+    out_file: NULL
+
+---
+
+```{r setup, include=FALSE, echo=F}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r init-variable, echo=F, message=FALSE, warning=FALSE}
+lib_dir <- params$lib_dir
+rds_file <- file.path(lib_dir, params$rds_path)
+if(is.null(params$out_file)){
+  out_file <- file.path(lib_dir, "check_pcr")
+}else{
+  out_file <- file.path(lib_dir, params$out_file)
+}
+
+rev_tag <- "acacacac,acagcaca,gtgtacat,tatgtcag,tagtcgca,tactatac,actagatc,gatcgcga,cgctctcg,gtcgtaga,gtcacgtc,gactgatg,agactatg,gcgtcagc,tgacatca,acatgtgt,gtacgact,atgatcgc,acgacgag,catcagtc,atcagtca,tctactga,gatgatct,ctgcgtac,agcgacta,tcagtgtc,actctgct,atatagcg,ctatgcta,tcgcgctg,agcacagt,tagctagt,agtgctac,cgtataca,cgagtcgt,cacatgat"
+
+fwd_tag <- "acacacac,acagcaca,gtgtacat,tatgtcag,tagtcgca,tactatac,actagatc,gatcgcga,cgctctcg,gtcgtaga,gtcacgtc,gactgatg,agactatg,gcgtcagc,tgacatca,acatgtgt,gtacgact,atgatcgc,acgacgag,catcagtc,atcagtca,tctactga,gatgatct,ctgcgtac,agcgacta,tcagtgtc,actctgct,atatagcg,ctatgcta,tcgcgctg,agcacagt,tagctagt"
+
+tag_list <- union(unlist(strsplit(fwd_tag, ",")), 
+                  unlist(strsplit(rev_tag, ",")))
+```
+
+
+```{r, load-dependencies, echo=F, message=FALSE, warning=FALSE, results='hide'}
+.libPaths( c( .libPaths(), "/bettik/lionnetc/my_r_libraries/") )
+library("metabaR")
+library("ggplot2")
+library("cowplot")
+library("ggrepel")
+library("gridExtra")
+library("ade4")
+library("RColorBrewer")
+library("DT")
+library("stringr")
+library("vegan")
+library("ape")
+library("reshape2")
+```
+
+
+```{r, load-data, warning=FALSE, echo=F, message=FALSE}
+mtbl <- readRDS(rds_file)
+```
+
+```{r, contaslayer-pcr, fig.height=8, fig.width=8, warning=FALSE}
+mtbl <- contaslayer(mtbl, control_types="pcr", 
+                      method="all", output_col="not_a_pcr_conta")
+
+ctl <- subset_metabarlist(mtbl, "pcrs", 
+                          mtbl$pcrs$type=="control" &
+                            mtbl$pcrs$control_type=="pcr")
+
+mtbl$motus[,"in_pcr_control"] <- rownames(mtbl$motus) %in% 
+  names(colSums(ctl$reads)[colSums(ctl$reads)>0])
+
+ctl_abund <- t(apply(mtbl$reads, 2, 
+                     function(col){ 
+                       col[!is.na(mtbl$pcrs$control_type) & 
+                             mtbl$pcrs$control_type=="pcr"]}))
+
+colnames(ctl_abund) <- paste("control_abundance", 
+                             colnames(ctl_abund), 
+                             sep = ":")
+
+mtbl$motus <- cbind(mtbl$motus, 
+                       ctl_abund[rownames(mtbl$motus), 
+                                 sort(colnames(ctl_abund))])
+
+rm(ctl)
+rm(ctl_abund)
+```
+
+### PCR template of pcr contaminant {.tabset}
+```{r, pcr-template-pcr-conta, fig.height=8, fig.width=8, warning=F, echo=FALSE, results ="asis"}
+conta <- subset_metabarlist(mtbl, "motus", 
+                            mtbl$motus$not_a_pcr_conta==FALSE)
+
+saveRDS(object = conta, file = file.path(lib_dir, "rds_files", "bact02_pcr_conta_6.rds"))
+
+for(lib in unique(conta$pcrs$library)){
+  mtb_lib <- subset_metabarlist(conta, "pcrs", conta$pcrs$library==lib)
+  cat(paste0("#### ",lib,"\n"))
+    
+  print(ggpcrtag(mtb_lib, taglist = as.character(tag_list)) + 
+          ggtitle(paste0("PCR template of PCR contaminants for  library ", lib, " - Bact02")) + 
+          theme(plot.title = element_text(hjust = 0.5)))
+  cat("\n\n")
+  rm(mtb_lib)
+  gc_stat <- gc()
+}
+rm(gc_stat)
+rm(conta)
+```
+
+### Table of PCR controls composition
+```{r, table-of-conta, warning=FALSE}
+ctl <- subset_metabarlist(mtbl, "pcrs", 
+                          mtbl$pcrs$type=="control" & 
+                            mtbl$pcrs$control_type=="pcr")
+
+ctl_info <- ctl$motus[names(colSums(ctl$reads)[colSums(ctl$reads)>0]),]
+
+out <- data.frame("scientific_name"=ctl_info$scientific_name,
+                  "rank"= ctl_info$rank,
+                  "best_identity"=ctl_info$`best_identity:Bact02.DB`,
+                  "is_contaminant"=ctl_info$not_a_pcr_conta==FALSE,
+                  "in_pcr_control"=ctl_info$in_pcr_control,
+                  "# reads in control"=colSums(ctl$reads)[rownames(ctl_info)],
+                  "# reads total"=colSums(mtbl$reads)[rownames(ctl_info)],
+                  "% whole dataset"=scales::percent(colSums(mtbl$reads)[rownames(ctl_info)]/sum(colSums(mtbl$reads)), 
+                                                    accuracy = 0.01),
+                  "sequence"=ctl_info$sequence,
+                  check.names = F)
+
+DT::datatable(out[order(out$`# reads in control`, decreasing = T),],
+              extensions = 'Buttons', 
+              options = list(dom = 'Bfrtip', 
+                             buttons = c('excel', "csv"),
+                             scrollX='400px'))
+
+rm(ctl_info)
+rm(ctl)
+rm(out)
+gc_stat <- gc()
+```
+
+
+### PCR plate without pcr and extraction contaminants {.tabset}
+```{r, remove-pcr-contaminant, fig.height=8, fig.width=8, warning=FALSE}
+mtbl <- subset_metabarlist(mtbl, "motus",
+                              mtbl$motus$not_a_pcr_conta==TRUE)
+```
+
+```{r, save-mtbl-after-pcr-conta, fig.height=8, fig.width=8, warning=FALSE}
+saveRDS(object = mtbl, file = file.path(lib_dir, "rds_files", "bact02_wo_pcr_conta_6.rds"))
+# mtbl <- readRDS(file.path(lib_dir, "rds_files", "bact02_wo_pcr_conta_6.rds"))
+```
+
+```{r, pcr-template-without-conta, fig.height=8, fig.width=8, warning=FALSE, results='asis'}
+for(lib in unique(mtbl$pcrs$library)){
+    mtb_lib <- subset_metabarlist(mtbl, "pcrs", mtbl$pcrs$library==lib)
+    
+    cat(paste0("#### ",lib,"\n"))
+    print(ggpcrtag(mtb_lib, taglist = as.character(tag_list)) + 
+            ggtitle(paste0("PCR template without pcr contaminants for  library ", lib, " - Bact02")) + 
+            theme(plot.title = element_text(hjust = 0.5)))
+    cat("\n\n")
+    
+    rm(mtb_lib)
+    gc_stat <- gc()
+}
+```
+
+```{r, remove-gc-pcr-conta, fig.height=8, fig.width=8, warning=FALSE}
+rm(gc_stat)
+```

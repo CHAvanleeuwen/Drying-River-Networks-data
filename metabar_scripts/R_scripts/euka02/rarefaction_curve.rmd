@@ -1,0 +1,62 @@
+---
+output: 
+  html_fragment:
+    keep_md: true
+    smart: true
+    md_extensions: +autolink_bare_uris+tex_math_single_backslash
+
+params:
+    lib_dir: /bettik/lionnetc/dryver/euka02_merged/run_clean_report
+    rds_path: rds_files/euka02_clean_clustered_8.rds
+
+---
+
+```{r setup, include=FALSE, echo=F}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+
+```{r init-variable, echo=F, message=FALSE, warning=FALSE}
+lib_dir <- params$lib_dir
+rds_file <- file.path(lib_dir, params$rds_path)
+```
+
+
+```{r, load-dependencies, echo=F, message=FALSE, warning=FALSE, results='hide'}
+.libPaths( c( .libPaths(), "/bettik/lionnetc/my_r_libraries/") )
+library("metabaR")
+library("ggplot2")
+```
+
+
+```{r, load-data, warning=FALSE, echo=F, message=FALSE}
+mtbl <- readRDS(rds_file)
+
+sample_rep <- subset_metabarlist(mtbl, "pcrs", mtbl$pcrs$type=="sample")
+samples <- aggregate_pcrs(sample_rep, FUN = FUN_agg_pcrs_sum)
+```
+
+### All
+```{r rarefaction_curve-all, fig.height=8, fig.width=12, warning=FALSE}
+rare <- hill_rarefaction(samples, nboot=30, nsteps = 10)
+gghill_rarefaction(rare, group = samples$samples$Country)
+
+rm(rare)
+```
+
+```{r rarefaction_curve-country, fig.height=8, fig.width=12, warning=FALSE, results='asis'}
+for(country in sort(unique(samples$samples$Country))){
+  sub_mat <- subset_metabarlist(samples, "samples", samples$samples$Country==country)
+  rare <- hill_rarefaction(sub_mat, nboot=30, nsteps = 10)
+  cat(paste0("### ", country , "\n"))
+  print(gghill_rarefaction(rare, group = sub_mat$samples[, "Sample_type"]))
+  cat("\n\n")
+  rm(rare)
+  gc_stat <- gc()
+}
+```
+
+
+```{r, remove-gc-pcr-conta, fig.height=8, fig.width=8, warning=FALSE}
+rm(gc_stat)
+```

@@ -1,0 +1,301 @@
+---
+output: 
+  html_fragment:
+    keep_md: true
+    smart: true
+    md_extensions: +autolink_bare_uris+tex_math_single_backslash
+params:
+    # lib_dir: /home/lionnetc/travail/document/DRYVER/bact02
+    lib_dir: /bettik/lionnetc/dryver/bact02_merged/run_clean_report
+    rds_path: rds_files/bact02_clean_7.rds
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE, echo=F}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+
+```{r init-variable, echo=F, message=FALSE, warning=FALSE}
+lib_dir <- params$lib_dir
+rds_file <- file.path(lib_dir, params$rds_path)
+```
+
+
+```{r, load-dependencies, echo=F, message=FALSE, warning=FALSE, results='hide'}
+.libPaths( c( .libPaths(), "/bettik/lionnetc/my_r_libraries/") )
+library("metabaR")
+library("ggplot2")
+library("cowplot")
+library("DT")
+library("stringr")
+library("vegan")
+library("ade4")
+library("ape")
+```
+
+```{r, function, echo=F, warning=F, message=F}
+## Function
+
+## Descriptive stat
+
+most_abund_motus_distribution <- function(metabarlist, plot_title, agg_low_motus=T){
+  
+  if(missing(plot_title)){
+      plot_title <- "Distribution of motus"
+  }
+  
+  ## get the positive control value
+  ctl_pos_name <- rownames(metabarlist$reads)
+  ## remove motus which are not present in the positive control
+  ctl_pos <- t(metabarlist$reads[, colSums(metabarlist$reads)>0, drop=F])
+  
+  ## rename motus by motus_nb_scientific_name
+  rownames(ctl_pos) <- paste("motus", 1:length(rownames(ctl_pos)), metabarlist$motus[, "scientific_name"], sep="_")
+  
+  ## get the relative abundance
+  ctl_pos_rel <- as.matrix(sweep(ctl_pos, STATS = colSums(ctl_pos), FUN = "/", MARGIN = 2))
+  
+  to_plot <- as.data.frame(do.call(rbind, lapply(colnames(ctl_pos_rel), function(ctlname){ 
+    return(data.frame("sample_name"=rep(ctlname, length(rownames(ctl_pos_rel[, ctlname, drop=F]))), 
+                      "motus"=rownames(ctl_pos_rel[, ctlname, drop=F]),
+                      "value"= as.vector(ctl_pos_rel[, ctlname, drop=F]), 
+                      "taxon"=gsub("motus_[0-9]+_", "", rownames(ctl_pos_rel[, ctlname, drop=F])),
+                      type="motus_distribution",
+                      stringsAsFactors = F))
+  })))
+  if (isTRUE(agg_low_motus)) {
+    filter <- to_plot$value<=0.01
+    low_motus <- to_plot[which(to_plot$value<=0.01), ]
+    to_plot <- to_plot[which(to_plot$value>0.01), ]
+    to_plot <- rbind(to_plot, data.frame(aggregate(low_motus["value"],
+                                                   by = list(sample_name=low_motus$sample_name), 
+                                                   FUN = sum), 
+                                         "motus"="other_motus",
+                                         "taxon"="other_taxon_under_0.01", 
+                                         "type"="motus_distribution"))
+  }
+  
+  read_data <- as.data.frame(do.call(rbind, lapply(colnames(ctl_pos), function(ctlname){ 
+    return(data.frame("sample_name"=rep(ctlname, length(rownames(ctl_pos[,ctlname, drop=F]))), 
+                      "motus"=rownames(ctl_pos[,ctlname, drop=F]),
+                      "value"=as.vector(ctl_pos[,ctlname, drop=F]), 
+                      "taxon"=gsub("motus_[0-9]+_", "", rownames(ctl_pos[,ctlname, drop=F])),
+                      type="replicate_abundance",
+                      stringsAsFactors = F))
+  })))
+  
+  if (isTRUE(agg_low_motus)) {
+    low_motus <- read_data[filter, ]
+    read_data <- read_data[which(!filter), ]
+    read_data <- rbind(read_data, data.frame(aggregate(low_motus["value"], 
+                                                       by = list(sample_name=low_motus$sample_name), 
+                                                       FUN = sum), 
+                                             "motus"="other_motus",
+                                             "taxon"="other_taxon_under_0.01", 
+                                             "type"="replicate_abundance"))
+  }
+  
+  to_plot <- rbind(read_data, to_plot)
+  ## define the control name order to keep order in x-axis
+  to_plot$sample_name <- factor(to_plot$sample_name, levels = unique(to_plot$sample_name[order(to_plot$sample_name, decreasing = F)]))
+  to_plot$type <- factor(to_plot$type, levels = c("replicate_abundance", 
+                                                  "motus_distribution"))
+  
+  ## ordering the motus value to sort motus in stack barchart for experiment data
+  to_plot$motus <- reorder(to_plot$motus, to_plot$value)
+  to_plot$motus <- factor(to_plot$motus, levels=rev(levels(to_plot$motus)))
+  
+  ggplot(to_plot[to_plot$value>0,], aes(x=sample_name, y=value, order=motus, fill=taxon)) +
+    geom_bar(inherit.aes = T, stat = "identity", colour="black") +
+    facet_wrap("type", scales = "free_y", nrow = 2) +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+          plot.title = element_text(hjust = 0.5)) +
+    # legend.position = "none") +
+    ggtitle(plot_title)
+}
+
+identify_disfunctional_PCR <- function(metabarlist, sample_categories=NA, 
+                                       threshold=NA, motus_thresh=NA, title="Identify dysfunctionnal pcr", filtering=TRUE){
+    to_plot <- data.frame(reads=rowSums(metabarlist$reads), 
+                          motus=rowSums(metabarlist$reads>0),
+                          type=metabarlist$pcrs[,"type"],
+                          stringsAsFactors = F)
+    to_plot[to_plot$type=="control", "type"] <- metabarlist$pcrs[to_plot$type=="control", "control_type"]
+    
+    if(!is.na(sample_categories)){
+        to_plot$categories <- metabarlist$samples[metabarlist$pcrs$sample_id, 
+                                              sample_categories]
+        to_plot[is.na(to_plot$categories),"categories"] <- "no_information"
+    }
+    to_plot <- to_plot[to_plot$reads>0,]
+    g1 <- ggplot(to_plot, aes(x=reads,y=motus, 
+                              color=type, 
+                              ifelse(is.na(sample_categories), NULL, shape=categories))) + 
+    geom_point() + scale_x_log10(name="# reads (log10)") + scale_y_log10(name="# motus (log10)") +
+    theme(plot.title = element_text(hjust = 0.5)) +
+    ggtitle(title)
+    
+    if(!is.na(threshold)){
+        g1 <- g1 + geom_vline(xintercept = threshold, color = "red", size=0.5)
+    }
+    if(!is.na(motus_thresh)){
+        g1 <- g1 + geom_hline(yintercept = motus_thresh, color = "red", size=0.5)
+    }
+    print(g1)
+    if(filtering){
+        return(rownames(to_plot[to_plot$reads<threshold | to_plot$motus<motus_thresh,]))
+    }
+}
+```
+
+```{r, load-data, warning=FALSE, echo=F, message=F}
+mtbl <- readRDS(rds_file)
+```
+
+
+## Remove bad replicate after filtering step {.tabset}
+### Filtering by read and motus count
+Sample replicates with the same characteristics as the extraction and PCR negative controls are removed.
+
+```{r, remove-low-pcr, warning=F, message=F}
+
+identify_disfunctional_PCR(mtbl, title="Replicate abundance", filtering = FALSE, threshold = 210, motus_thresh = 16)
+# remove low abundant replicates
+lowAbundRep <- names(rowSums(mtbl$reads))[rowSums(mtbl$reads) < 210 | rowSums(mtbl$reads>0) < 16]
+mtbl <- subset_metabarlist(mtbl, "reads", rowSums(mtbl$reads) >= 210 & rowSums(mtbl$reads>0) >= 16)
+```
+
+
+### Filtering by pcr replicate dissimilarity {.tabset}
+After the previous filtering steps, some pcr replicates have lost too much motus and no longer look like the other sample replicates. This step checks if pcr always replicates for each sample. To do this the same method uses in the section " PCR reproducibility" is ran on filtered data to check if the previous filtering steps have not remove too much motus and replicates.
+
+```{r, remove-bad-replicate-after-filtering, warning=F, message=F, results='asis', fig.height=20, fig.width=20}
+bad_replicate <- unlist(lapply(sort(unique(mtbl$samples$Country)), function(country) {
+  cat(paste0("#### ", country, " {.tabset}\n"))
+  to_remove <- unlist(lapply(unique(mtbl$samples$Sample_type), function(soil_type){
+    cat(paste0("##### ", soil_type, "\n"))
+    sub_mat <- subset_metabarlist(mtbl, "samples", mtbl$samples$Country==country & mtbl$samples$Sample_type==soil_type)
+    to_remove <- rownames(sub_mat$pcrs[sub_mat$pcrs$sample_id %in% 
+                                         names(table(sub_mat$pcrs$sample_id))[table(sub_mat$pcrs$sample_id)<2],])
+    sub_mat <- subset_metabarlist(sub_mat, "pcrs", 
+                                  !rownames(sub_mat$pcrs) %in% to_remove)
+    check_pcr <- metabaR:::pcr_outlier(sub_mat, graphics = FALSE)
+    to_remove <- c(to_remove, rownames(check_pcr)[!check_pcr$replicating])
+    d <- vegdist(decostand(sub_mat$reads, method = "total"), method = "bray")
+    d[is.na(d)] <- 1
+    tr <- ape::nj(d)
+    col_tips <- as.numeric(as.factor(!check_pcr[tr$tip.label, "replicating"]))
+    plot(tr, tip.color = c("black", "red")[col_tips], cex = 0.5, 
+         main = paste0("NJ tree of replicates distance for ", soil_type, " of ", country),
+         type = "fan")
+    edgelabels(text = sprintf("%.2f", tr$edge.length), cex=0.4, frame = "none", adj = c(0,0))
+    cat("\n\n")
+    rm(sub_mat)
+    rm(d)
+    gc_stat <- gc()
+    return(to_remove)
+  }))
+  cat("\n\n")
+  return(to_remove)
+}))
+
+sample_tab <- table(mtbl$pcrs[mtbl$pcrs$type=="sample", "sample_id"])
+bad_replicate <- c(bad_replicate, rownames(mtbl$pcrs)[mtbl$pcrs$sample_id %in% 
+                                                        names(sample_tab)[sample_tab<2]])
+mtbl <- subset_metabarlist(mtbl, "pcrs", !rownames(mtbl$pcrs) %in% bad_replicate)
+mtbl <- subset_metabarlist(mtbl, "motus", colSums(mtbl$reads>0) > 1)
+
+mtbl$motus[, "not_clustered"] <- grepl("nnn", mtbl$motus$sequence)
+
+all(!rownames(mtbl$pcrs[mtbl$pcrs$type=="sample",]) %in% bad_replicate)
+```
+
+```{r, save-mtbl-wo-disfunctional-pcrs, warning=F, echo=F, eval=T}
+saveRDS(mtbl, file = file.path(lib_dir, "rds_files", "dryver_bact02_wo_disfunctional-pcrs.rds"))
+```
+
+
+# Filtering verification
+## Positive control composition
+```{r, check-positive-control-after-filtering, warning=F, message=F, fig.height=8, fig.width=18}
+positive_controls <- subset_metabarlist(mtbl, "pcrs", 
+                                        mtbl$pcrs$type=="control" & 
+                                          mtbl$pcrs$control_type=="positive")
+
+most_abund_motus_distribution(positive_controls, 
+                              "Distribution of motus in positive control replicates", agg_low_motus=FALSE) +
+theme(legend.position = "none")
+
+rm(positive_controls)
+gc_stat <- gc()
+```
+
+
+## Check replication and contamination {.tabset}
+### Tree {.tabset}
+```{r, nj-tree-pcr-type, warning=F, message=F, results='asis', fig.height=20, fig.width=20}
+for(dna in sort(unique(mtbl$pcrs$dna_plate))){
+  cat("#### dna plate ", dna, "\n")
+  
+  sub_mat <- subset_metabarlist(mtbl, "pcrs", mtbl$pcrs$dna_plate==dna)
+  sub_mat <- subset_metabarlist(sub_mat, "reads", rowSums(sub_mat$reads)>0)
+  
+  d <- vegdist(decostand(sub_mat$reads, method = "total"), method = "bray")
+  d[is.na(d)] <- 1
+  tr<-ape::nj(d)
+  
+  col_tips <- sub_mat$pcrs[tr$tip.label, "control_type"]
+  col_tips[is.na(col_tips)] <- "sample"
+  col_tips <- as.numeric(factor(col_tips, levels = c("pcr", "extraction", "sample", "positive", "sequencing")))
+  
+  plot(tr, tip.color = rainbow(5)[col_tips], cex = 0.5, 
+       main = paste0("NJ tree of replicates distance for dna plate ", dna),
+       type = "fan")
+  
+  cat("\n\n")
+  rm(sub_mat)
+  rm(tr)
+  rm(d)
+  rm(col_tips)
+  gc_stat <- gc()
+}
+```
+
+### BCA {.tabset}
+To make the Between Class Analysis plot, the data are normalized with the Hellinger method.
+
+```{r, BCA-plot, warning=F, message=F, eval=T, results='asis', fig.height=10, fig.width=11}
+for(lib in sort(unique(mtbl$pcrs$library))){
+  cat("#### library ", lib, "\n")
+  
+  sub_mat <- subset_metabarlist(mtbl, "pcrs", mtbl$pcrs$library==lib)
+  sub_mat <- subset_metabarlist(sub_mat, "reads", rowSums(sub_mat$reads)>0)
+  sub_mat$reads <- decostand(sub_mat$reads, method = "hellinger")
+  
+  sub_mat_pca <- dudi.pca(sub_mat$reads, scale = FALSE, scannf = FALSE, nf = 100)
+  
+  col_fac <- sub_mat$pcrs$control_type
+  col_fac[is.na(col_fac)] <- sub_mat$samples[sub_mat$pcrs[is.na(col_fac), "sample_id"], "Sample_type"]
+  col_fac[col_fac %in% c("extraction", "pcr")] <- "ctl_neg"
+  
+  sub_mat_bca <- bca(sub_mat_pca, 
+                 fac = factor(col_fac), 
+                 scannf = FALSE, nf = 2)
+  
+  print(ggplot(data.frame(sub_mat_bca$ls, sub_mat$pcrs), 
+         aes(x=CS1, y=CS2, shape=type, 
+             color=factor(col_fac, levels = c("biofilm", "sediment", "positive", "ctl_neg")))) + 
+          labs(color="Class") +
+    geom_point() + stat_ellipse() +
+    ggtitle(paste0("BCA - library ", lib)))
+  
+  cat("\n\n")
+}
+```
+
+
+```{r, remove-gc-pcr-conta, fig.height=8, fig.width=8, warning=FALSE}
+rm(gc_stat)
+```
